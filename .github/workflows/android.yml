@@ -44,7 +44,14 @@ jobs:
         working-directory: android
         env:
           VERSION_CODE: ${{ github.run_number }}
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
+          # Optional stable signing key, stored as repo secrets (never committed)
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/release.keystore"
+          fi
           # GitHub's Ubuntu runners ship the Android SDK; just point Gradle at it
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           chmod +x gradlew
@@ -68,4 +75,4 @@ jobs:
             Glasswild for Android, built from `${{ github.ref_name }}` @ ${{ github.sha }}.
 
             **Install:** download `Glasswild.apk` on your phone and open it. Android will ask you to allow installs from your browser the first time.
-            Every build is signed with the same key, so a newer APK installs over the old one and your terrarium is kept.
+            The web version at the GitHub Pages link in the README installs the same app from Chrome and updates itself.

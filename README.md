@@ -4,16 +4,15 @@ A living terrarium for your phone, with a clock at its centre. Plant what you're
 
 ## Getting it on your phone
 
-**Android (APK).** Every push builds a signed APK and publishes it under **Releases** in this repo.
-1. On your phone, open the repo's **Releases** page, signed in to GitHub, and download `Glasswild.apk` from the newest build.
-2. Open it. The first time, Android asks you to allow installs from your browser.
-3. Later builds install over the top and keep your terrarium, because every build is signed with the same key.
+**Android (recommended): install the web app.**
+1. On your phone, open **https://landonfrye98-a11y.github.io/Terrarium-App/** in Chrome.
+2. Tap ⋮ → **Install app** (or **Add to Home screen**).
 
-**Any phone (web app).** Serve the `www/` folder over HTTPS. Then:
-- **iPhone:** open it in Safari, tap Share, then **Add to Home Screen**.
-- **Android:** open it in Chrome and choose **Install app**.
+It gets its own icon, runs fullscreen, works offline, and updates itself whenever this repo changes. Your terrarium lives on the phone.
 
-It runs fullscreen and works offline.
+**iPhone:** open the same link in Safari → Share → **Add to Home Screen**.
+
+**Android APK (optional):** each push also builds `Glasswild.apk` under **Releases**. To make APK updates install over each other, add a signing key as repo secrets `ANDROID_KEYSTORE_BASE64` (a base64-encoded keystore with alias `glasswild`) and `ANDROID_KEYSTORE_PASSWORD`. Without these secrets, each build is signed with a throwaway key, and you have to uninstall the old APK before installing a new one.
 
 ## What lives here
 
@@ -53,7 +52,7 @@ npm run serve          # http://localhost:8080 — no build step, plain ES modul
 
 Debug URL parameters: `?fresh` (ignore the save), `?hour=20` (force the sky), `?done=12` (pretend 12 tasks are finished), `?warp=60` (speed up time), `?perf=saver`, `?fps` (log frame rate).
 
-The Android wrapper is [Capacitor](https://capacitorjs.com) (`android/`). CI (`.github/workflows/android.yml`) runs `cap sync` and `gradlew assembleRelease`, then publishes the release. The signing keystore is committed on purpose so that updates install over each other. This is a personal sideloaded app, so don't reuse that key for anything published to a store.
+The Android wrapper is [Capacitor](https://capacitorjs.com) (`android/`). CI (`.github/workflows/android.yml`) runs `cap sync` and `gradlew assembleRelease`, then publishes the release. `.github/workflows/pages.yml` deploys `www/` to GitHub Pages.
 
 ```
 www/js/
