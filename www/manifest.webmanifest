@@ -1,0 +1,20 @@
+{
+  "name": "Glasswild — a living terrarium",
+  "short_name": "Glasswild",
+  "description": "A living terrarium clock. Plant your tasks as seeds; finish them and they bloom into strange creatures.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "any",
+  "background_color": "#141a2e",
+  "theme_color": "#1b2236",
+  "categories": ["productivity", "lifestyle", "entertainment"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

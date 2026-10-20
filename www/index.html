@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#1b2236">
+  <meta name="color-scheme" content="dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Glasswild">
+  <meta name="description" content="A living terrarium clock. Plant your tasks as seeds; finish them and they bloom into strange creatures.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <title>Glasswild</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <canvas id="scene" aria-label="A living terrarium with a clock at its centre"></canvas>
+  <div id="inset-probe" aria-hidden="true"></div>
+
+  <!-- focus bar: visible while a task is being worked on -->
+  <div id="focus-bar" class="chrome" hidden>
+    <span class="dot"></span>
+    <div class="focus-text"><span id="focus-title"></span><span id="focus-time"></span></div>
+    <button class="icon-btn" id="focus-pause" aria-label="Pause task"><svg viewBox="0 0 24 24"><path d="M8 6v12M16 6v12"/></svg></button>
+    <button class="icon-btn accent" id="focus-done" aria-label="Finish task"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>
+  </div>
+
+  <!-- dock -->
+  <nav id="dock" class="chrome">
+    <button class="dock-btn" data-open="journal" aria-label="Field journal">
+      <svg viewBox="0 0 24 24"><path d="M5 4.5h9.5a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h9.5"/><circle cx="11" cy="8.5" r="1.6"/></svg>
+      <span>Journal</span>
+    </button>
+    <button class="dock-btn main" data-open="tasks" aria-label="Tasks">
+      <svg viewBox="0 0 24 24"><path d="M12 20c-4 0-6-3-6-6.5C6 9 9 5 12 3.5c3 1.5 6 5.5 6 10S16 20 12 20z"/><path d="M12 20V10"/><path d="M12 14c-1.5-.5-2.5-1.5-3-3M12 12.5c1.2-.4 2-1.2 2.4-2.4"/></svg>
+      <span>Tasks</span>
+      <b class="badge" id="task-badge" hidden>0</b>
+    </button>
+    <button class="dock-btn" data-open="settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/></svg>
+      <span>Glass</span>
+    </button>
+  </nav>
+
+  <div id="scrim" hidden></div>
+
+  <!-- tasks -->
+  <section class="sheet" id="sheet-tasks" aria-label="Tasks" hidden>
+    <div class="grab"></div>
+    <header><h2>Seeds &amp; blooms</h2><button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
+    <form id="task-form" autocomplete="off">
+      <input id="task-input" type="text" maxlength="120" placeholder="Plant a task…" enterkeyhint="done" aria-label="New task">
+      <button type="submit" class="btn accent">Plant</button>
+    </form>
+    <p class="hint" id="task-hint">Each task becomes a seed in the soil. Press ▶ while you work on it and a sprout grows; finish it and it blooms into a creature.</p>
+    <h3>Growing <small id="growing-count"></small></h3>
+    <ul class="task-list" id="task-list"></ul>
+    <h3>Bloomed today <small id="bloomed-count"></small></h3>
+    <ul class="task-list done" id="done-list"></ul>
+    <p class="footnote" id="task-stats"></p>
+  </section>
+
+  <!-- journal -->
+  <section class="sheet" id="sheet-journal" aria-label="Field journal" hidden>
+    <div class="grab"></div>
+    <header><h2>Field journal</h2><button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="species" class="on">Species</button>
+      <button role="tab" data-tab="living">Inhabitants</button>
+      <button role="tab" data-tab="log">Log</button>
+    </div>
+    <div class="tab-body" id="tab-species"></div>
+    <div class="tab-body" id="tab-living" hidden></div>
+    <div class="tab-body" id="tab-log" hidden></div>
+  </section>
+
+  <!-- settings -->
+  <section class="sheet" id="sheet-settings" aria-label="Settings" hidden>
+    <div class="grab"></div>
+    <header><h2>The glass</h2><button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
+
+    <div class="setting">
+      <label>Battery</label>
+      <div class="seg" data-key="perf">
+        <button data-v="saver">Saver</button><button data-v="balanced">Balanced</button><button data-v="smooth">Fluid</button>
+      </div>
+      <p class="hint" id="perf-hint"></p>
+    </div>
+    <div class="setting row"><label for="s-awake">Keep screen awake</label><input type="checkbox" id="s-awake" data-key="awake" class="switch"></div>
+    <div class="setting">
+      <label>Clock</label>
+      <div class="seg" data-key="clockMode">
+        <button data-v="analog">Analog</button><button data-v="both">Both</button><button data-v="digital">Digital</button>
+      </div>
+    </div>
+    <div class="setting row"><label for="s-h24">24-hour time</label><input type="checkbox" id="s-h24" data-key="h24" class="switch"></div>
+    <div class="setting row"><label for="s-sec">Seconds spore</label><input type="checkbox" id="s-sec" data-key="showSeconds" class="switch"></div>
+    <div class="setting row"><label for="s-labels">Label seed pods</label><input type="checkbox" id="s-labels" data-key="labels" class="switch"></div>
+    <div class="setting">
+      <label>Sky</label>
+      <div class="seg" data-key="sky">
+        <button data-v="real">Real time</button><button data-v="day">Always day</button><button data-v="night">Always night</button>
+      </div>
+    </div>
+    <div class="setting"><label for="s-dim">Dim <small id="dim-val"></small></label><input type="range" id="s-dim" data-key="dim" min="0" max="0.7" step="0.05"></div>
+    <div class="setting row"><label for="s-autohide">Fade controls when idle</label><input type="checkbox" id="s-autohide" data-key="autohide" class="switch"></div>
+    <div class="setting row"><label for="s-sound">Ambient sound</label><input type="checkbox" id="s-sound" data-key="sound" class="switch"></div>
+    <div class="setting"><label for="s-vol">Volume</label><input type="range" id="s-vol" data-key="volume" min="0" max="1" step="0.05"></div>
+    <div class="setting row native-only" hidden><label for="s-immersive">Hide status bar</label><input type="checkbox" id="s-immersive" data-key="immersive" class="switch"></div>
+
+    <h3>Terrarium</h3>
+    <p class="hint" id="world-stats"></p>
+    <div class="btn-row">
+      <button class="btn" id="btn-export">Export</button>
+      <button class="btn" id="btn-import">Import</button>
+      <button class="btn danger" id="btn-reset">Start a new glass</button>
+      <input type="file" id="import-file" accept="application/json" hidden>
+    </div>
+    <p class="footnote">Glasswild runs entirely on this device. Nothing leaves it. The creature designs and colours are a love letter to the look of <i>Scavengers Reign</i>.</p>
+  </section>
+
+  <!-- creature inspector -->
+  <aside id="inspector" class="chrome card" hidden>
+    <button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    <canvas id="insp-portrait" width="120" height="120"></canvas>
+    <div class="insp-body">
+      <h4 id="insp-name"></h4>
+      <p class="latin" id="insp-latin"></p>
+      <dl id="insp-facts"></dl>
+      <div class="meter"><span id="insp-energy"></span></div>
+      <p class="origin" id="insp-origin"></p>
+    </div>
+  </aside>
+
+  <div id="toasts" aria-live="polite"></div>
+
+  <div id="splash">
+    <div class="splash-inner">
+      <svg class="splash-mark" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="26" fill="none" stroke="#efe4cc" stroke-width="2" opacity=".6"/><path d="M32 32 L32 14" stroke="#24575a" stroke-width="3.5" stroke-linecap="round"/><ellipse cx="32" cy="13" rx="3.5" ry="5" fill="#e5775f"/><path d="M32 32 Q40 30 46 40" stroke="#6fb7a8" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="32" cy="32" r="4.5" fill="#b8613f"/><ellipse cx="32" cy="32" rx="1.6" ry="2.8" fill="#2a2236"/><circle cx="58" cy="32" r="2.5" fill="#8ff5e4"/></svg>
+      <h1>Glasswild</h1>
+      <p>a living terrarium for the hours you work</p>
+      <p class="splash-tip" id="splash-tip"></p>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

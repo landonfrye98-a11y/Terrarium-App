@@ -1,0 +1,22 @@
+{
+  "name": "glasswild",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A living terrarium clock. Plant your tasks as seeds; finish them and they bloom into creatures.",
+  "scripts": {
+    "serve": "python3 -m http.server 8080 --directory www",
+    "sync": "cap sync android",
+    "apk": "cap sync android && cd android && ./gradlew assembleRelease"
+  },
+  "dependencies": {
+    "@capacitor-community/keep-awake": "^8.0.1",
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/haptics": "^8.0.0",
+    "@capacitor/status-bar": "^8.0.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.3"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "appId": "app.glasswild.terrarium",
+  "appName": "Glasswild",
+  "webDir": "www",
+  "backgroundColor": "#141a2e",
+  "android": {
+    "backgroundColor": "#141a2e"
+  },
+  "plugins": {
+    "SystemBars": { "insetsHandling": "css" }
+  }
+}
