@@ -331,7 +331,7 @@ class App {
     w.on('log', ({ kind, msg, offline }) => {
       if (offline) return;
       if (kind === 'mutation') this.ui.toast(msg, false, 5000);
-      if (kind === 'visitor') this.ui.toast('Look up — a gloamwhale is passing.', true, 6000);
+      if (kind === 'visitor') this.ui.toast(msg.startsWith('A gloamwhale') ? 'Look up: a gloamwhale is passing.' : msg, msg.startsWith('A gloamwhale'), 6000);
       if (kind === 'birth' || kind === 'mutation') this.audio.birth();
       if (this.ui.openSheet === 'journal' && this.ui.tab === 'log') this.ui.renderLog();
     });

@@ -70,10 +70,10 @@ export class Clock {
     ctx.save();
     ctx.lineCap = 'round';
 
+    // membrane
+    ctx.fillStyle = rgba(hexToRgb(mixHex(s.skyTop, P.ink, 0.4)), (mode === 'digital' ? 0.22 : 0.16) + night * 0.08);
+    ctx.beginPath(); ctx.arc(cx, cy, R * 1.04, 0, TAU); ctx.fill();
     if (mode !== 'digital') {
-      // membrane
-      ctx.fillStyle = rgba(hexToRgb(mixHex(s.skyTop, P.ink, 0.4)), 0.16 + night * 0.08);
-      ctx.beginPath(); ctx.arc(cx, cy, R * 1.04, 0, TAU); ctx.fill();
       ctx.strokeStyle = rgba(inkRGB, 0.38);
       ctx.lineWidth = Math.max(1, R * 0.012);
       ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.stroke();
@@ -159,7 +159,7 @@ export class Clock {
     const timeStr = `${h24 ? String(hh).padStart(2, '0') : hh}:${String(now.getMinutes()).padStart(2, '0')}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const shadow = rgba(hexToRgb(P.ink), 0.35);
+    const shadow = rgba(hexToRgb(P.ink), 0.3 + (1 - night) * 0.25);
     if (mode === 'digital') {
       const fs = R * 0.62;
       ctx.font = `300 ${fs}px ${this.font}`;

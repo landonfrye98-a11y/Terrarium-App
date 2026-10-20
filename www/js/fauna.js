@@ -477,7 +477,7 @@ export class Petalmoth extends Creature {
   drawGlow(ctx, world) {
     if (world.night < 0.08) return;
     const s = this.scale * world.U;
-    drawGlow(ctx, this.genome.glow, this.x, this.y, 3.2 * s, world.night * 0.85);
+    drawGlow(ctx, this.genome.glow, this.x, this.y, 3 * s, world.night * 0.5);
   }
 }
 

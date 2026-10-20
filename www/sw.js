@@ -1,5 +1,5 @@
 // Offline-first cache for the app shell. Bump VERSION to ship an update.
-const VERSION = 'glasswild-v1';
+const VERSION = 'glasswild-v2';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/main.js', 'js/world.js', 'js/fauna.js', 'js/flora.js', 'js/scenery.js', 'js/clock.js',

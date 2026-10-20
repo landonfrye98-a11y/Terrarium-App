@@ -285,6 +285,7 @@ export class World {
     this.gust = lerp(this.gust, this._gustTarget || 0, dt * 0.3);
     if (this.mindPulse) { this.mindPulse.age += dt; if (this.mindPulse.age > 10) this.mindPulse = null; }
 
+    this.weather(dt);
     this._lifeAcc += dt;
     if (this._lifeAcc >= 1) { this.tick(this._lifeAcc); this._lifeAcc = 0; }
 
@@ -295,6 +296,24 @@ export class World {
     for (const r of this.ripples) r.t += dt;
     if (this.ripples.length && this.ripples[0].t > 3) this.ripples.shift();
     this.particles.update(dt, this.t);
+  }
+
+  // Every so often a slow drift of spores falls through the glass. It costs
+  // a handful of particles a second and quietly feeds the soil and the pond.
+  weather(dt) {
+    if (this.offline) return;
+    if (this._driftAt == null) this._driftAt = this.t + rr(8, 25) * 60;
+    if (this.t > this._driftAt && !this.drift) {
+      this.drift = { until: this.t + rr(120, 240), col: [P.glowLime, P.glowAmber, P.glowPink, P.glowCyan][Math.floor(Math.random() * 4)] };
+      this.log('A spore drift is falling through the glass.', 'visitor');
+    }
+    const d = this.drift;
+    if (!d) return;
+    if (this.t > d.until) { this.drift = null; this._driftAt = this.t + rr(35, 90) * 60; for (let i = 0; i < 6; i++) this.addFert(rr(0, this.W), 0.04); return; }
+    const fade = Math.min(1, (d.until - this.t) / 20);
+    if (Math.random() < dt * 5 * fade) {
+      this.particles.emit({ type: 'mote', x: rr(0, this.W), y: -4, vx: rr(-4, 4) * this.U * 0.3, vy: rr(5, 9) * this.U * 0.4, drag: 0, wob: 10, life: rr(14, 22), size: rr(1.4, 2.6), color: P.cream, glow: d.col });
+    }
   }
 
   moveItems(dt) {
