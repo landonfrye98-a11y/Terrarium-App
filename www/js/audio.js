@@ -1,8 +1,9 @@
 // Glasswild soundscape: an optional, generative score driven by the ecosystem.
-// Off by default. A slow three-voice pad follows a chord progression whose mode
-// tracks the time of day; each species "sings" on a small shared voice bank
-// with its own timbre, and what the creatures do (births, kills, pollination,
-// splashes...) shapes which voices sound and how often.
+// Off by default. Cozy and steady, for working to: warm 7th chords in a
+// major key, a relaxed lo-fi groove (soft kick, wooden ticks, round bass, a
+// swung electric-piano arpeggio) and the creatures decorating it in key, each
+// with its own timbre. What they do (births, pollination, splashes, hunts)
+// shapes how busy the decorations are.
 //
 // Battery first:
 //  - the whole node graph is built ONCE (lazily) in ensure(); notes never
@@ -14,10 +15,12 @@
 
 const ROOT = 146.83; // D3
 const LOOKAHEAD = 1.2; // seconds of events scheduled per tick
-const STEP = 0.25; // beat grid
-const POOL = 8;
+const STEP = 0.2; // grid for one-off event notes
+const POOL = 12;
 
 const MODES = {
+  ionian: [0, 2, 4, 5, 7, 9, 11],
+  mixolydian: [0, 2, 4, 5, 7, 9, 10],
   lydian: [0, 2, 4, 6, 7, 9, 11],
   dorian: [0, 2, 3, 5, 7, 9, 10],
   aeolian: [0, 2, 3, 5, 7, 8, 10],
@@ -25,12 +28,16 @@ const MODES = {
 };
 // chord roots as scale degrees (0-based); each chord is a stacked-third triad
 const PROG = {
+  ionian: [0, 5, 1, 4, 0, 3, 1, 4],   // Imaj7 vi7 ii7 V7 | Imaj7 IVmaj7 ii7 V7
+  mixolydian: [3, 2, 1, 0, 3, 6, 4, 0], // the slow evening walk home
   lydian: [0, 1, 4, 0, 2, 1],
   dorian: [0, 3, 0, 6, 4, 3],
   aeolian: [0, 5, 2, 6, 0, 3],
   phrygian: [0, 1, 0, 5, 0, 6],
 };
-const modeFor = (h) => (h >= 5 && h < 8 ? 'lydian' : h >= 8 && h < 18 ? 'dorian' : h >= 18 && h < 21 ? 'aeolian' : 'phrygian');
+// bright mornings, warm days, mellow evenings, a soft and still-major night
+const modeFor = (h) => (h >= 5 && h < 9 ? 'lydian' : h >= 9 && h < 18 ? 'ionian' : 'mixolydian');
+const BPM = (night, focus) => (focus ? 74 : 78) - night * 8;
 
 // timbres. h = sine-series harmonics of the main osc; ratio/pAmt/pDecay = the
 // partial osc (inharmonic shimmer, wooden knock, breath beating...)
@@ -40,7 +47,12 @@ const SPECS = {
   ribbonfin: { h: [1, 0.08], ratio: 2.0, pAmt: 0.25, pDecay: 0.08, att: 0.002, dur: 0.45, gain: 0.055, oct: 1, pan: 0.6, drop: 1.45, dropT: 0.07, shape: 'perc' },
   scuttler: { h: [1, 0, 0, 0.2, 0, 0.05], ratio: 3.99, pAmt: 0.4, pDecay: 0.03, att: 0.002, dur: 0.22, gain: 0.045, oct: 1, pan: 0.5, shape: 'perc' },
   bellwisp: { h: [1, 0.06, 0.02], ratio: 1.004, pAmt: 0.6, pDecay: 0, att: 1.2, dur: 2.6, gain: 0.035, oct: 1, pan: 0.6, shape: 'swell' },
-  predator: { h: [1, 0.6, 0.35, 0.2, 0.12, 0.06], ratio: 2.013, pAmt: 0.3, pDecay: 0, att: 0.5, dur: 3.2, gain: 0.065, oct: -1, pan: 0.2, shape: 'swell' },
+  predator: { h: [1, 0.25, 0.06], ratio: 2.003, pAmt: 0.12, pDecay: 0, att: 0.4, dur: 2.4, gain: 0.04, oct: -1, pan: 0.2, shape: 'swell' },
+  // the groove
+  keys: { h: [1, 0.3, 0.12, 0.05, 0.02], ratio: 1.003, pAmt: 0.35, pDecay: 0.5, att: 0.006, dur: 1.4, gain: 0.05, oct: 1, pan: 0.35, shape: 'perc' },
+  bass: { h: [1, 0.3, 0.08], ratio: 2.0, pAmt: 0.08, pDecay: 0.15, att: 0.012, dur: 0.85, gain: 0.1, oct: -1, pan: 0, shape: 'perc' },
+  kick: { h: [1], ratio: 1, pAmt: 0, pDecay: 0, att: 0.002, dur: 0.2, gain: 0.11, oct: -2, pan: 0, drop: 2.2, dropT: 0.05, shape: 'perc' },
+  tick: { h: [1, 0, 0.3], ratio: 3.7, pAmt: 0.9, pDecay: 0.015, att: 0.001, dur: 0.05, gain: 0.03, oct: 3, pan: 0.3, shape: 'perc' },
   bell: { h: [1, 0, 0.25, 0, 0.08], ratio: 2.4, pAmt: 0.35, pDecay: 0.6, att: 0.005, dur: 3.0, gain: 0.06, oct: 2, pan: 0.3, shape: 'perc' },
 };
 const KIND_SPEC = { petalmoth: 'petalmoth', stiltstrider: 'stiltstrider', ribbonfin: 'ribbonfin', scuttler: 'scuttler', bellwisp: 'bellwisp', hookjaw: 'predator', lancewing: 'predator', mireeel: 'predator' };
@@ -51,6 +63,16 @@ const DEFAULT_POP = { petalmoth: 3, bellwisp: 2, scuttler: 2, ribbonfin: 1 };
 const ACT_KEYS = ['births', 'deaths', 'pollinations', 'hunts', 'kills', 'pulses', 'splashes', 'hatches'];
 
 const rnd = Math.random;
+// arpeggio patterns over 8 eighth notes, as chord offsets (0 root, 2 third,
+// 4 fifth, 6 seventh, 7 octave, 8 ninth); null = rest
+const ARPS = [
+  [0, 4, 7, 4, 6, 4, 2, null],
+  [0, 2, 4, 6, 7, 6, 4, 2],
+  [7, 4, 2, 4, 6, null, 4, 2],
+  [0, null, 4, 7, 8, 7, 4, null],
+  [2, 4, 6, 4, 0, 4, 6, 8],
+];
+const c0 = (s) => s.chordDeg;
 const fit = (f, lo) => { if (!(f > 0)) return lo; while (f < lo) f *= 2; while (f >= lo * 2) f /= 2; return f; };
 const semi = (mode, d) => mode[((d % 7) + 7) % 7] + 12 * Math.floor(d / 7);
 
@@ -68,7 +90,10 @@ export class Soundscape {
     this.restMs = 10 * 60 * 1000;
     this.lastActMs = Date.now();
     this.activity = 0;
-    this.mode = 'dorian';
+    this.mode = 'ionian';
+    this.beatT = 0;
+    this.beatN = 0;
+    this.pattern = 0;
     this.progIdx = 0;
     this.chordDeg = 0;
     this.nextChord = 0;
@@ -123,10 +148,10 @@ export class Soundscape {
 
     // one shared room
     const conv = ctx.createConvolver();
-    conv.buffer = this._impulse(ctx, 1.6);
-    const revOut = ctx.createGain(); revOut.gain.value = 0.45;
+    conv.buffer = this._impulse(ctx, 1.2);
+    const revOut = ctx.createGain(); revOut.gain.value = 0.3;
     conv.connect(revOut); revOut.connect(mix);
-    const revSend = ctx.createGain(); revSend.gain.value = 0.4;
+    const revSend = ctx.createGain(); revSend.gain.value = 0.28;
     revSend.connect(conv);
 
     // pad: 3 oscillators -> lowpass -> padGain
@@ -195,7 +220,7 @@ export class Soundscape {
       let lp = 0;
       for (let i = 0; i < len; i++) {
         const x = i / len;
-        const a = 0.85 - 0.75 * x; // lowpass coefficient falls -> darker tail
+        const a = 0.9 - 0.45 * x; // a warm room, not a cave
         lp += a * (rnd() * 2 - 1 - lp);
         const fadeIn = Math.min(1, i / (sr * 0.006));
         d[i] = lp * Math.exp(-x * 5.5) * fadeIn;
@@ -400,102 +425,106 @@ export class Soundscape {
     const focus = !!state.focus;
     const hunting = (Number(state.hunting) || 0) > 0;
     this.night = night; this.focus = focus;
-
-    // activity: smoothed weighted events per second
     const w = ev.births + ev.deaths + ev.hatches + 0.5 * (ev.pollinations + ev.splashes) + ev.hunts + 2 * ev.kills + ev.pulses;
     this.activity = this.activity * 0.8 + Math.min(20, w) * 0.2;
 
-    // harmony: chord changes every ~20-28 s; mode follows the hour
-    if (now >= this.nextChord) {
-      const m = modeFor(hour);
-      if (m !== this.mode) { this.mode = m; this.progIdx = 0; } else this.progIdx++;
-      const prog = PROG[this.mode];
-      this.chordDeg = prog[this.progIdx % prog.length];
-      this.nextChord = now + 20 + rnd() * 8;
-    }
     const mode = MODES[this.mode];
-    const lowF = night > 0.6 ? 55 : 65, midF = night > 0.6 ? 110 : 140;
-    let pf;
-    if (hunting) pf = [ROOT / 2, fit(ROOT * Math.pow(2, 1 / 12), midF), fit(ROOT * Math.pow(2, 7 / 12), midF)]; // sus b2
-    else {
-      const c = this.chordDeg;
-      pf = [fit(ROOT * Math.pow(2, semi(mode, c) / 12), lowF), fit(ROOT * Math.pow(2, semi(mode, c + 2) / 12), midF), fit(ROOT * Math.pow(2, semi(mode, c + 4) / 12), midF)];
-    }
-    const tc = hunting ? 1.5 : 3;
-    pf.forEach((f, i) => this._glide(this.pad[i].frequency, 'p' + i, f, tc));
+    const beat = 60 / BPM(night, focus);
+    // keep the beat clock just ahead of now (skip, don't burst, after a stall)
+    if (this.beatT < now + 0.05) this.beatT = Math.ceil((now + 0.05) / beat) * beat;
+    const end = now + LOOKAHEAD;
 
-    // colour: filter by time of day, closed for focus
-    const base = this.mode === 'lydian' ? 1300 : this.mode === 'dorian' ? 1600 : this.mode === 'aeolian' ? 1000 : 650;
-    const cutoff = focus ? 600 : base * (1 - 0.3 * night) + (hunting ? -200 : 0);
+    // colour: warm and open by day, softer at night, a little closed for focus
+    const cutoff = (focus ? 1100 : 1700) * (1 - 0.35 * night);
     if (now >= this.swellUntil) {
-      this._glide(this.padFilter.frequency, 'cut', Math.max(350, cutoff), 4);
-      this._glide(this.padGain.gain, 'padG', focus ? 0.42 : 0.55 - 0.1 * night, 4);
+      this._glide(this.padFilter.frequency, 'cut', Math.max(450, cutoff), 3);
+      this._glide(this.padGain.gain, 'padG', focus ? 0.38 : 0.48 - 0.08 * night, 3);
     }
-    this._glide(this.lfoF.gain, 'lfoF', focus ? 70 : 160, 4);
-    this._glide(this.voiceBus.gain, 'bus', (focus ? 0.5 : 1) * (1 - 0.25 * night), 2);
-
-    // density
-    let cap = night > 0.6 ? 1.5 : 3;
-    if (focus) cap *= 0.4;
-    this.gap = 1 / cap;
+    this._glide(this.lfoF.gain, 'lfoF', 90, 4);
+    this._glide(this.voiceBus.gain, 'bus', (focus ? 0.8 : 1) * (1 - 0.2 * night), 2);
     const pop = world.pop && typeof world.pop === 'object' ? world.pop : DEFAULT_POP;
-    let total = 0;
-    for (const k in pop) total += Math.max(0, Number(pop[k]) || 0);
-    let rate = (0.28 - 0.18 * night) + 0.12 * this.activity + 0.04 * Math.log1p(total);
-    if (focus) rate *= 0.4;
-    rate = Math.min(rate, cap);
-    if (this.nextSlot < now) this.nextSlot = now;
 
-    // ecosystem events first (they are reactions), capped per tick
+    // ---- the groove, bar by bar (4 beats, chords change every 2 bars)
+    for (; this.beatT < end; this.beatT += beat, this.beatN++) {
+      const t = this.beatT, b = this.beatN % 4, bar = Math.floor(this.beatN / 4);
+      if (b === 0 && bar % 2 === 0) {
+        const m = modeFor(hour);
+        if (m !== this.mode) { this.mode = m; this.progIdx = 0; } else this.progIdx++;
+        const prog = PROG[this.mode];
+        this.chordDeg = prog[this.progIdx % prog.length];
+        this.pattern = (rnd() * ARPS.length) | 0;
+        // pad: a 7th chord (root, 3rd, 7th) glides in; a gentle sus4 during a hunt
+        const c = this.chordDeg, md = MODES[this.mode];
+        const tones = hunting ? [c, c + 3, c + 4] : [c, c + 2, c + 6];
+        const pf = [fit(ROOT * Math.pow(2, semi(md, tones[0]) / 12), 55), fit(ROOT * Math.pow(2, semi(md, tones[1]) / 12), 140), fit(ROOT * Math.pow(2, semi(md, tones[2]) / 12), 140)];
+        pf.forEach((f, i) => this.pad[i].frequency.setTargetAtTime(f, t, 0.25));
+      }
+      const c = this.chordDeg;
+      const deep = night > 0.6;
+      // soft kick on 1 (and 3 by day), wooden ticks on 2 and 4
+      if (b === 0 || (b === 2 && !deep)) this._note('kick', ROOT / 2, t, b === 0 ? 1 : 0.7);
+      if ((b === 1 || b === 3) && !deep) this._note('tick', this._freq(c + 4, 2), t + beat * 0.02, focus ? 0.6 : 0.9, { pan: b === 1 ? -0.25 : 0.25 });
+      // round bass on the root, with a pickup on the 'and' of 3
+      if (b === 0) this._note('bass', this._freq(c, -1), t, 1);
+      if (b === 2 && rnd() < 0.6) this._note('bass', this._freq(c + (rnd() < 0.5 ? 4 : 0), -1), t + beat * 0.5, 0.75, { dur: 0.5 });
+      // swung electric-piano arpeggio over the chord
+      const arp = ARPS[this.pattern];
+      for (let e = 0; e < 2; e++) {
+        const k = arp[(b * 2 + e) % arp.length];
+        if (k == null) continue;
+        if ((focus || deep) && e === 1 && rnd() < 0.6) continue; // sparser when focusing or late
+        const swing = e ? beat * 0.58 : 0;
+        this._note('keys', this._freq(c + k, deep ? 0 : 1), t + swing, (e ? 0.7 : 0.9) * (b === 0 && !e ? 1.1 : 1), { pan: ((b * 2 + e) % 4 - 1.5) * 0.18 });
+      }
+    }
+
+    // ---- the creatures decorate the tune, in key
+    let cap = night > 0.6 ? 1 : 1.8;
+    if (focus) cap *= 0.45;
+    this.gap = 1 / cap;
+    if (this.nextSlot < now) this.nextSlot = now;
     const octN = night > 0.6 ? -1 : 0;
-    let budget = focus ? 2 : 4;
+    let budget = focus ? 1 : 3;
     const fire = (n, fn) => { for (let i = 0; i < Math.min(n, 2) && budget > 0; i++, budget--) fn(); };
-    fire(ev.kills, () => { const s = this._slot(); if (s >= 0) this._note('predator', ROOT / 4 * Math.pow(2, 1 / 12), s, 1.1, { dur: 3.6 }); });
     fire(ev.births, () => {
       const s = this._slot(0.4); if (s < 0) return;
-      const d = this.chordDeg;
-      [0, 2, 4].forEach((k, i) => this._note('bell', this._freq(d + k, night > 0.6 ? 1 : 2), s + i * 0.15, 0.55 - i * 0.08));
+      [0, 2, 4].forEach((k, i) => this._note('bell', this._freq(c0(this) + k, night > 0.6 ? 1 : 2), s + i * 0.14, 0.45 - i * 0.07));
     });
     if (ev.pulses && now - this.lastPulse > 6) { budget--; this.pulse(); }
-    fire(ev.hunts, () => { const s = this._slot(); if (s >= 0) this._note('predator', this._freq(this.chordDeg, -1), s, 0.6); });
-    fire(ev.pollinations, () => { const s = this._slot(); if (s >= 0) this._note('petalmoth', this._freq(this._degree('pm'), 2 + octN), s, 0.9); });
+    fire(ev.kills, () => { const s = this._slot(); if (s >= 0) this._note('predator', this._freq(c0(this), -1), s, 0.8); });
+    fire(ev.pollinations, () => { const s = this._slot(); if (s >= 0) this._note('petalmoth', this._freq(this._degree('pm'), 2 + octN), s, 0.7); });
     fire(ev.splashes, () => {
       const s = this._slot(0.15); if (s < 0) return;
       const d = this._degree('rf');
-      this._note('ribbonfin', this._freq(d, 1), s, 0.9);
-      if (rnd() < 0.5) this._note('ribbonfin', this._freq(d + 2, 1), s + 0.13, 0.6);
+      this._note('ribbonfin', this._freq(d, 1), s, 0.8);
+      if (rnd() < 0.5) this._note('ribbonfin', this._freq(d + 2, 1), s + 0.13, 0.55);
     });
     fire(ev.hatches, () => {
       const s = this._slot(0.2); if (s < 0) return;
       const d = this._degree('sc');
-      this._note('scuttler', this._freq(d, 1), s, 0.9); this._note('scuttler', this._freq(d + 1, 1), s + 0.12, 0.7);
+      this._note('scuttler', this._freq(d, 1), s, 0.8); this._note('scuttler', this._freq(d + 2, 1), s + 0.12, 0.6);
     });
-    fire(ev.deaths, () => { const s = this._slot(); if (s >= 0) this._note('bellwisp', this._freq(this.chordDeg + 4, octN), s, 0.6, { att: 0.8, dur: 2.4 }); });
 
-    // ambient voices on the beat grid, weighted by population
-    if (this.sched < now + 0.05) this.sched = Math.ceil((now + 0.05) / STEP) * STEP;
-    const end = now + LOOKAHEAD;
+    // an occasional ambient call from whoever lives here, weighted by population
     const kinds = [], weights = [];
     let wsum = 0;
     for (const k in KIND_SPEC) {
       let wk = Math.max(0, Number(pop[k]) || 0) * KIND_WEIGHT[k];
-      if (PREDATORS.has(k)) wk *= hunting ? 3 : 1;
-      if (k === 'bellwisp') wk *= 1 + 0.5 * night;
-      if (k === 'petalmoth') wk *= 1 - 0.5 * night;
+      if (PREDATORS.has(k)) wk *= 0.5;
       if (wk > 0) { kinds.push(k); weights.push(wk); wsum += wk; }
     }
-    for (; this.sched < end; this.sched += STEP) {
-      const g = this.sched;
-      if (g < this.nextSlot || wsum <= 0 || rnd() >= rate * STEP) continue;
+    let rate = (0.18 - 0.08 * night) + 0.06 * this.activity;
+    if (focus) rate *= 0.4;
+    if (wsum > 0 && budget > 0 && rnd() < Math.min(rate, cap)) {
       let r = rnd() * wsum, i = 0;
       while (i < kinds.length - 1 && (r -= weights[i]) > 0) i++;
-      const k = kinds[i], spec = KIND_SPEC[k];
-      const sp = SPECS[spec];
-      let oct = (KIND_OCT[k] ?? sp.oct) + (spec === 'predator' || spec === 'stiltstrider' ? 0 : octN);
-      const deg = spec === 'predator' ? this.chordDeg + (rnd() < 0.5 ? 0 : 4) : this._degree(k);
-      this._note(spec, this._freq(deg, oct), g, 0.7 + rnd() * 0.3);
-      if (spec === 'stiltstrider' && rnd() < 0.5) this._note(spec, this._freq(deg, oct), g + 0.5, 0.6); // a second step
-      this.nextSlot = g + this.gap;
+      const k = kinds[i], spec = KIND_SPEC[k], sp = SPECS[spec];
+      const s = this._slot(0.3);
+      if (s >= 0) {
+        const oct = (KIND_OCT[k] ?? sp.oct) + (spec === 'predator' || spec === 'stiltstrider' ? 0 : octN);
+        const deg = spec === 'predator' ? this.chordDeg : this._degree(k);
+        this._note(spec, this._freq(deg, oct), s, 0.6 + rnd() * 0.25);
+      }
     }
   }
 

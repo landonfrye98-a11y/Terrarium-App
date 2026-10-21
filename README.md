@@ -73,11 +73,11 @@ npm run serve          # http://localhost:8080 — no build step, plain ES modul
 
 **Focus timer:** each task has a target (15–90 minutes). Its sprout reaches full bloom exactly at the target, and the app chimes and vibrates when you get there.
 
-**Music (optional):** a generative score driven by the ecosystem:
-- each species has its own voice;
-- the key and chords follow the time of day;
-- a hunt brings a tense chord that resolves after the kill;
-- during focus it drops to a calm bed.
+**Music (optional):** a cozy lo-fi score made for working to.
+- Warm 7th chords in a major key: brighter in the morning, mellower at night.
+- A relaxed groove: soft kick, wooden ticks, round bass and a swung electric-piano arpeggio.
+- The creatures decorate the tune in key, each in its own voice, and get busier when the glass is busy.
+- While you focus, the groove keeps going but the decorations thin out.
 
 It uses one fixed pool of synth voices and suspends itself when hidden or idle.
 
