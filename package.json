@@ -6,7 +6,8 @@
   "scripts": {
     "serve": "python3 -m http.server 8080 --directory www",
     "sync": "cap sync android",
-    "apk": "cap sync android && cd android && ./gradlew assembleRelease"
+    "apk": "cap sync android && cd android && ./gradlew assembleRelease",
+    "test": "node tools/sim.mjs"
   },
   "dependencies": {
     "@capacitor-community/keep-awake": "^8.0.1",
@@ -18,5 +19,6 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.3"
-  }
+  },
+  "type": "module"
 }

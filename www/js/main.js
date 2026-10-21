@@ -14,7 +14,9 @@ import { TaskGarden, dayKey } from './tasks.js';
 import { Soundscape } from './audio.js';
 import { UI } from './ui.js';
 import { SPECIES } from './species.js';
-import { Ambient, TAU, rr, dist2, fmtDuration } from './util.js';
+import { setArt } from './fauna.js';
+import { setFloraArt } from './flora.js';
+import { Ambient, TAU, rr, dist2 } from './util.js';
 import { P } from './palette.js';
 
 const SAVE_KEY = 'glasswild.world.v1';
@@ -25,13 +27,13 @@ const SETTINGS_KEY = 'glasswild.settings.v1';
 const PERF = {
   saver: { fps: 12, dpr: 1, plants: 4, clock: 1 },
   balanced: { fps: 24, dpr: 1.5, plants: 10, clock: 2 },
-  smooth: { fps: 60, dpr: 2, plants: 0, clock: 0 },
+  smooth: { fps: 60, dpr: 2, plants: 0, clock: 4 },
 };
 const DEFAULTS = {
   perf: 'balanced', awake: true, clockMode: 'analog', h24: false, showSeconds: true, smoothSeconds: true,
   labels: true, sky: 'real', dim: 0, autohide: true, sound: false, volume: 0.6, immersive: true, onboarded: false,
 };
-const LAYER = { ribbonfin: 0, scuttler: 1, stiltstrider: 2, mindbloom: 3, bellwisp: 4, petalmoth: 5 };
+const LAYER = { ribbonfin: 0, mireeel: 0, scuttler: 1, hookjaw: 2, stiltstrider: 3, mindbloom: 4, bellwisp: 5, petalmoth: 6, lancewing: 7 };
 
 const params = new URLSearchParams(location.search);
 const Cap = window.Capacitor;
@@ -102,6 +104,7 @@ class App {
     this.splash(away);
     this.start();
     setInterval(() => this.slowTick(), 1000);
+    this.loadArt();
     this.registerSW();
   }
 
@@ -184,12 +187,13 @@ class App {
       this.lastBgT = w.t;
     }
     // sort draw order once a second
-    w.fauna.sort((a, b) => LAYER[a.kind] - LAYER[b.kind]);
+    if (w._sortDirty) { w.fauna.sort((a, b) => LAYER[a.kind] - LAYER[b.kind]); w._sortDirty = false; }
+    this.garden.tick();
     if (dayKey() !== this.day) { this.day = dayKey(); this.garden.rollover(); }
     this.ui.tickTasks();
     if (this.ui.inspecting) this.ui.updateInspector(false);
-    this.audio.tick(w);
-    if (w.t - (this.lastSave || 0) > 30) this.save();
+    this.audio.tick(w, { focus: !!this.garden.active, hunting: w.hunting, idleMs: performance.now() - (this.ui.lastInput || 0) });
+    if (w.t - (this.lastSave || 0) > 60) this.save();
     if (params.has('fps')) { const n = performance.now(); console.log('fps', (this.frames * 1000 / (n - this.fpsT)).toFixed(1)); this.frames = 0; this.fpsT = n; }
   }
 
@@ -332,10 +336,14 @@ class App {
       if (offline) return;
       if (kind === 'mutation') this.ui.toast(msg, false, 5000);
       if (kind === 'visitor') this.ui.toast(msg.startsWith('A gloamwhale') ? 'Look up: a gloamwhale is passing.' : msg, msg.startsWith('A gloamwhale'), 6000);
-      if (kind === 'birth' || kind === 'mutation') this.audio.birth();
       if (this.ui.openSheet === 'journal' && this.ui.tab === 'log') this.ui.renderLog();
     });
-    w.onPulse = () => this.audio.pulse();
+  }
+
+  // the focus timer reached its target (called by the UI)
+  focusReached() {
+    this.audio.focusChime();
+    this.haptic([30, 80, 30, 80, 60]);
   }
 
   completeTask(id) {
@@ -445,7 +453,10 @@ class App {
     const bits = [];
     if (res.births) bits.push(`${res.births} born`);
     if (res.deaths) bits.push(`${res.deaths} passed`);
-    this.ui.toast(`You were away ${fmtDuration(res.seconds * 1000).replace(/:\d\d$/, '').replace(/^0:/, '0h ')}${bits.length ? ' · ' + bits.join(' · ') : ' · all quiet'}`, false, 5000);
+    if (res.kills) bits.push(`${res.kills} eaten`);
+    const h = Math.floor(res.seconds / 3600), m = Math.round((res.seconds % 3600) / 60);
+    const away = h ? `${h}h ${m}m` : `${m}m`;
+    this.ui.toast(`You were away ${away}${bits.length ? ' · ' + bits.join(' · ') : ' · all quiet'}`, false, 5000);
   }
 
   save() {
@@ -535,6 +546,15 @@ class App {
     else setTimeout(go, 700);
     // audio contexts may only start from a gesture
     if (this.settings.sound) window.addEventListener('pointerdown', () => { if (this.pendingSound) { this.pendingSound = false; this.audio.setOn(true); } }, { once: true });
+  }
+
+  // richer creature artwork lives in its own module; the app works without it
+  loadArt() {
+    import('./art.js').then((m) => {
+      setArt(m.ART);
+      setFloraArt(m.FLORA_ART);
+      this.plantT = -1e9;
+    }).catch(() => {});
   }
 
   registerSW() {

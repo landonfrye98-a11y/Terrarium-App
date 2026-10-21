@@ -1,9 +1,9 @@
 // Offline-first cache for the app shell. Bump VERSION to ship an update.
-const VERSION = 'glasswild-v2';
+const VERSION = 'glasswild-v3';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/main.js', 'js/world.js', 'js/fauna.js', 'js/flora.js', 'js/scenery.js', 'js/clock.js',
-  'js/tasks.js', 'js/ui.js', 'js/audio.js', 'js/particles.js', 'js/palette.js', 'js/species.js', 'js/util.js',
+  'js/art.js', 'js/tasks.js', 'js/ui.js', 'js/audio.js', 'js/particles.js', 'js/palette.js', 'js/species.js', 'js/util.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
 ];
 

@@ -77,14 +77,25 @@ export function hexToRgb(hex) {
 export const toHex = ([r, g, b]) =>
   '#' + [r, g, b].map((v) => clamp(Math.round(v), 0, 255).toString(16).padStart(2, '0')).join('');
 export const mixRgb = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
-const mixMemo = new Map();
+// Nested memo (a -> b -> t -> hex): lookups never build a key string.
+let mixMemo = new Map();
+let mixMemoSize = 0;
 export function mixHex(a, b, t) {
-  const k = a + b + t;
-  let v = mixMemo.get(k);
-  if (v) return v;
+  let mb = mixMemo.get(a);
+  if (mb === undefined) mixMemo.set(a, (mb = new Map()));
+  let mt = mb.get(b);
+  if (mt === undefined) mb.set(b, (mt = new Map()));
+  let v = mt.get(t);
+  if (v !== undefined) return v;
   v = toHex(mixRgb(hexToRgb(a), hexToRgb(b), t));
-  if (mixMemo.size > 3000) mixMemo.clear();
-  mixMemo.set(k, v);
+  if (mixMemoSize > 3000) {
+    mixMemo = new Map();
+    mixMemoSize = 0;
+    mixMemo.set(a, (mb = new Map()));
+    mb.set(b, (mt = new Map()));
+  }
+  mt.set(t, v);
+  mixMemoSize++;
   return v;
 }
 export const rgba = ([r, g, b], a = 1) => `rgba(${r | 0},${g | 0},${b | 0},${a})`;
@@ -97,35 +108,57 @@ export function jitterHex(hex, amt = 12, r = Math.random) {
 }
 
 // The ambient light shades every living thing. Colors are memoised per
-// light state, so per-frame draw calls are just Map lookups.
+// light state in a two-level map (hex -> alpha -> css string), so per-frame
+// draw calls are allocation-free Map lookups. The shaded "rgba(r,g,b," prefix
+// is kept per hex, so even a miss (a new alpha) is a single concatenation.
 export class Ambient {
   constructor() {
     this.tint = [255, 255, 255];
     this.amt = 0;
     this.night = 0;
     this.key = '';
-    this.cache = new Map();
+    this._amtQ = NaN;
+    this._nightQ = NaN;
+    this._tintHex = '';
+    this.cache = new Map(); // hex -> Map<alpha, string>; inner map's `pre` holds the prefix
+    this.size = 0;
   }
   set(tintHex, amt, night) {
-    const key = tintHex + Math.round(amt * 50) + '|' + Math.round(night * 50);
+    // compare the quantised light state numerically; only build the key
+    // string when it actually changed
+    const aq = Math.round(amt * 50), nq = Math.round(night * 50);
+    if (aq === this._amtQ && nq === this._nightQ && tintHex === this._tintHex) return;
+    this._amtQ = aq; this._nightQ = nq; this._tintHex = tintHex;
+    const key = tintHex + aq + '|' + nq;
     if (key === this.key) return;
     this.key = key;
     this.tint = hexToRgb(tintHex);
     this.amt = amt;
     this.night = night;
     this.cache.clear();
+    this.size = 0;
   }
   // Shade a base color into the current light.
   c(hex, a = 1) {
-    const k = hex + a;
-    let s = this.cache.get(k);
-    if (s) return s;
-    const base = hexToRgb(hex);
-    // multiply-ish blend toward the tint, keeps saturation in the dark
-    const m = [base[0] * this.tint[0] / 255, base[1] * this.tint[1] / 255, base[2] * this.tint[2] / 255];
-    s = rgba(mixRgb(base, m, this.amt), a);
-    if (this.cache.size > 600) this.cache.clear();
-    this.cache.set(k, s);
+    a = Math.round(a * 64) / 64; // animated alphas share cache entries
+    let m = this.cache.get(hex);
+    if (m !== undefined) {
+      const s = m.get(a);
+      if (s !== undefined) return s;
+    } else {
+      m = new Map();
+      const base = hexToRgb(hex), t = this.tint, k = this.amt;
+      // multiply-ish blend toward the tint, keeps saturation in the dark
+      // (same arithmetic as rgba(mixRgb(base, base*tint/255, amt), a))
+      m.pre = 'rgba(' + (lerp(base[0], base[0] * t[0] / 255, k) | 0) + ',' +
+        (lerp(base[1], base[1] * t[1] / 255, k) | 0) + ',' +
+        (lerp(base[2], base[2] * t[2] / 255, k) | 0) + ',';
+      this.cache.set(hex, m);
+    }
+    const s = m.pre + a + ')';
+    // continuous alphas (fades, pulses) would otherwise grow the cache forever
+    if (++this.size > 1500) { for (const mm of this.cache.values()) mm.clear(); this.size = 1; }
+    m.set(a, s);
     return s;
   }
 }

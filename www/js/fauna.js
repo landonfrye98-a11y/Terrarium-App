@@ -2,7 +2,11 @@
 // palette; offspring inherit it with small drift and the occasional mutation,
 // so lineages slowly develop their own look over days.
 import { P, FAMILIES } from './palette.js';
-import { SPECIES, makeName } from './species.js';
+import { SPECIES, ECO, makeName } from './species.js';
+
+// Optional richer artwork, registered by art.js when it is present.
+let ART = {};
+export function setArt(a) { ART = a || {}; }
 import {
   TAU, clamp, lerp, rr, pick, chance, uid, mixHex, jitterHex, drawGlow, mulberry32, smooth, fbm, dist2,
 } from './util.js';
@@ -28,9 +32,21 @@ export class Creature {
     this.timer = 0;
     Object.assign(this, o);
     if (!this.genome) this.genome = C.randomGenome(Math.random);
+    const g = this.genome;
+    // traits that matter for survival: speed (costs energy) and glow
+    // (helps breeding, but shows you to predators at night)
+    if (g.spd == null) g.spd = rr(0.85, 1.15);
+    if (g.gl == null) g.gl = g.glow || g.eye ? rr(0.2, 0.8) : 0;
     if (!this.life) this.life = rr(C.lifeRange[0], C.lifeRange[1]);
+    this.inf ||= 0;
+    this.digest ||= 0;
     this._trance = 0;
   }
+
+  // drawing goes through art.js when it's loaded
+  draw(ctx, world, amb) { const a = ART[this.kind]; if (a) a.draw(ctx, this, world, amb); else this.drawBasic(ctx, world, amb); }
+  drawGlow(ctx, world) { const a = ART[this.kind]; if (a) a.glow(ctx, this, world); else this.glowBasic(ctx, world); }
+  get nStruct() { return ECO.nBody[this.kind] * this.genome.size; }
 
   get grown() { return clamp(this.age / this.constructor.mature, 0, 1); }
   get scale() { return (0.42 + 0.58 * smooth(this.grown)) * this.genome.size; }
@@ -43,8 +59,17 @@ export class Creature {
 
   lifeTick(world, dt) {
     this.age += dt;
-    this.energy -= dt / this.constructor.metabolism;
-    if (this.energy < 0) { this.energy = 0; this.age += dt * 2; }
+    // faster bodies burn more
+    const spd = this.genome.spd || 1;
+    this.energy -= dt / this.constructor.metabolism * spd * spd;
+    if (this.energy <= 0) {
+      this.energy = 0;
+      this._starve = (this._starve || 0) + dt;
+      if (this._starve > 8 * HR) { world.killFauna(this, 'starved'); return; }
+    } else this._starve = 0;
+    // a body holding far more nutrient than it needs sheds some
+    const cap = 3 * this.nStruct;
+    if (this.n > cap) { const x = (this.n - cap) * Math.min(1, dt / HR); this.n -= x; world.depositN(this.x, x); }
     if (world.offline) this.forage(world, dt);
     if (this.age >= this.life) world.killFauna(this, 'age');
   }
@@ -60,6 +85,8 @@ export class Creature {
     }
     g.seed = Math.floor(r() * 1e9);
     g.size = clamp(g.size, 0.78, 1.3);
+    g.spd = clamp(g.spd ?? 1, 0.7, 1.4);
+    g.gl = clamp((g.gl ?? 0) + (r() * 2 - 1) * 0.04, 0, 1);
     let mutation = null;
     if (r() < 0.12) mutation = this.constructor.mutate(g, r);
     return { genome: g, mutation };
@@ -72,10 +99,9 @@ export class Creature {
     return 'a new colouration';
   }
 
+  // set by the mindbloom's pulse, counted down here
   trance(world, dt) {
-    this._trance = Math.max(0, this._trance - dt);
-    const m = world.mindPulse;
-    if (m && m.age < 0.5 && dist2(this.x, this.y, m.x, m.y) < (60 * world.U) ** 2) this._trance = 9;
+    if (this._trance > 0) this._trance -= dt;
     return this._trance > 0;
   }
 
@@ -88,7 +114,7 @@ export class Creature {
 
   serialize(world) {
     const o = {};
-    for (const k in this) if (k[0] !== '_' && k !== 'target' && k !== 'reach') o[k] = this[k];
+    for (const k in this) if (k[0] !== '_' && k !== 'target' && k !== 'reach' && k !== 'hunt' && k !== 'lured') o[k] = this[k];
     o.x = this.x / world.W;
     o.y = this.y / world.H;
     return o;
@@ -130,7 +156,7 @@ export class Scuttler extends Creature {
     const U = world.U;
     if (this.trance(world, dt)) { this.y = world.groundY(this.x) + this.depth * U; return; }
     this.timer -= dt;
-    const speed = 2.4 * U * (0.7 + 0.3 * this.scale) * (this.stage === 'elder' ? 0.7 : 1);
+    const speed = 2.4 * U * (0.7 + 0.3 * this.scale) * (this.stage === 'elder' ? 0.7 : 1) * this.genome.spd;
     switch (this.state) {
       case 'idle':
         if (this.timer <= 0) this.choose(world);
@@ -153,9 +179,8 @@ export class Scuttler extends Creature {
         if (this.timer <= 0) {
           const it = this.target;
           if (it && !it.gone) {
-            world.consumeItem(it);
             this.energy = Math.min(1, this.energy + 0.45 * it.food);
-            world.addFert(this.x, 0.12);
+            world.consumeItem(it, this);
             world.particles.burst(this.x, world.groundY(this.x), 5, { type: 'spark', color: P.bone, speed: 10, life: 0.8, g: 30 });
           }
           this.target = null; this.state = 'idle'; this.timer = rr(2, 6);
@@ -203,8 +228,8 @@ export class Scuttler extends Creature {
   }
 
   maybeSplit(world) {
-    if (this.adult && this.energy > 0.85 && world.room('scuttler')) {
-      this.energy *= 0.5;
+    if (world.canBreed(this)) {
+      this.energy *= 0.6;
       world.birth(this, { x: this.x + this.dir * -3 * world.U, energy: this.energy });
     }
   }
@@ -212,11 +237,11 @@ export class Scuttler extends Creature {
   forage(world, dt) {
     if (this.energy < 0.8 && chance(1 / 1800, dt)) {
       const it = world.items.find((i) => i.grounded && !i.inWater && !i.gone);
-      if (it) { world.consumeItem(it); this.energy = Math.min(1, this.energy + 0.45 * it.food); world.addFert(it.x, 0.12); this.maybeSplit(world); }
+      if (it) { this.energy = Math.min(1, this.energy + 0.45 * it.food); world.consumeItem(it, this); this.maybeSplit(world); }
     }
   }
 
-  draw(ctx, world, amb) {
+  drawBasic(ctx, world, amb) {
     const g = this.genome;
     const s = this.scale * world.U;
     const under = this.depth > 0.4;
@@ -280,7 +305,7 @@ export class Scuttler extends Creature {
     ctx.restore();
   }
 
-  drawGlow(ctx, world) {
+  glowBasic(ctx, world) {
     if (world.night < 0.1) return;
     const s = this.scale * world.U;
     drawGlow(ctx, this.genome.eye, this.x + this.dir * 3.7 * s, this.y - 3.1 * s, 2.2 * s, world.night * 0.7);
@@ -356,12 +381,24 @@ export class Petalmoth extends Creature {
     }
     this.timer -= dt;
     const flapRate = this.genome.flap;
+    if (this.lured) {
+      // a snaplure's glow: it looks exactly like nectar
+      const p = this.lured.tip(world);
+      const dx = p.x - this.x, dy = p.y - this.y, d = Math.hypot(dx, dy) || 1;
+      this.vx = lerp(this.vx, dx / d * 8 * U, Math.min(1, dt * 2));
+      this.vy = lerp(this.vy, dy / d * 8 * U, Math.min(1, dt * 2));
+      this.x += this.vx * dt; this.y += this.vy * dt;
+      this.flapT = (this.flapT || 0) + dt * flapRate;
+      if (Math.abs(this.vx) > 0.5 * U) this.dir = Math.sign(this.vx);
+      if (d < 1.8 * U) world.trapKill(this.lured, this);
+      return;
+    }
     if (this.state === 'fly') {
       if (this.target) { const p = this.target.tip(world); this.tx = p.x; this.ty = p.y + 3.2 * U; }
       if (this.perch != null) { const c = world.clock; this.tx = c.cx + Math.cos(this.perch) * c.R; this.ty = c.cy + Math.sin(this.perch) * c.R - 1.2 * U * this.scale; }
       const dx = this.tx - this.x, dy = this.ty - this.y;
       const d = Math.hypot(dx, dy) || 1;
-      const sp = 11 * U * (this.stage === 'elder' ? 0.75 : 1);
+      const sp = 11 * U * (this.stage === 'elder' ? 0.75 : 1) * this.genome.spd;
       const wob = fbm(world.t * 0.6 + this.phase, 3) * 9 * U;
       const near = d < 2.2 * U;
       const k = near ? 0.6 : 1;
@@ -384,7 +421,7 @@ export class Petalmoth extends Creature {
       this.flapT = (this.flapT || 0) + dt * flapRate * 0.8;
       if (this.timer <= 0) {
         this.energy = Math.min(1, this.energy + 0.35 * t.nectar);
-        t.nectar = Math.max(0, t.nectar - 0.4);
+        t.harvest(world, this, 0.4);
         world.pollinate(this);
         this.maybeLay(world);
         this.pickTarget(world);
@@ -409,7 +446,7 @@ export class Petalmoth extends Creature {
   }
 
   maybeLay(world) {
-    if (!this.adult || this.energy < 0.8 || !world.room('petalmoth')) return;
+    if (!world.canBreed(this)) return;
     const hosts = world.flora.filter((p) => (p.kind === 'fanfern' || p.kind === 'bulbstalk' || p.kind === 'coilspire') && p.growth > 0.6 && !p.wither);
     if (!hosts.length) return;
     const h = pick(hosts);
@@ -421,11 +458,11 @@ export class Petalmoth extends Creature {
   forage(world, dt) {
     if (this.energy < 0.8 && chance(1 / 900, dt)) {
       const lily = world.flora.find((p) => p.kind === 'lanternlily' && p.nectar > 0.3 && p.growth > 0.5);
-      if (lily) { lily.nectar -= 0.4; this.energy = Math.min(1, this.energy + 0.3); world.pollinate(this); this.maybeLay(world); }
+      if (lily) { this.energy = Math.min(1, this.energy + 0.3); lily.harvest(world, this, 0.4); world.pollinate(this); this.maybeLay(world); }
     }
   }
 
-  draw(ctx, world, amb) {
+  drawBasic(ctx, world, amb) {
     const g = this.genome;
     const s = this.scale * world.U;
     const f = this.state === 'perch' ? 0.55 + 0.45 * Math.sin(this.flapT || 0) : 0.2 + 0.8 * Math.abs(Math.sin(this.flapT || 0));
@@ -474,7 +511,7 @@ export class Petalmoth extends Creature {
     ctx.restore();
   }
 
-  drawGlow(ctx, world) {
+  glowBasic(ctx, world) {
     if (world.night < 0.08) return;
     const s = this.scale * world.U;
     drawGlow(ctx, this.genome.glow, this.x, this.y, 3 * s, world.night * 0.5);
@@ -510,6 +547,15 @@ export class Bellwisp extends Creature {
   move(world, dt) {
     const U = world.U;
     if (this.homeY == null || !isFinite(this.homeY)) this.homeY = rr(world.H * 0.12, world.groundBase - 28 * U);
+    if (this.lured) {
+      // drifting up into a dewveil's strands
+      const p = this.lured.tip(world);
+      this.vx = lerp(this.vx, (p.x - this.x) * 0.3, dt);
+      this.vy = lerp(this.vy, (p.y - this.y) * 0.3, dt);
+      this.x += this.vx * dt; this.y += this.vy * dt;
+      if (Math.hypot(p.x - this.x, p.y - this.y) < 3 * U) world.trapKill(this.lured, this);
+      return;
+    }
     if (this.trance(world, dt)) { this.vx *= 0.95; this.vy *= 0.95; }
     const t = world.t;
     const wantX = fbm(t * 0.03 + this.phase * 5, 9) * 5 * U;
@@ -528,6 +574,8 @@ export class Bellwisp extends Creature {
   }
 
   lifeTick(world, dt) {
+    // tendrils sip mineral mist rising off the soil
+    if (this.n < 3 * this.nStruct) this.n += world.takeN(this.x, dt / (5 * HR) * this.nStruct);
     this.energy += dt / (3 * HR) * (1 - world.night) * 0.9;
     this.energy = Math.min(1, this.energy);
     if (this.age + dt >= this.life) { this.burst(world); return; }
@@ -536,19 +584,19 @@ export class Bellwisp extends Creature {
 
   burst(world) {
     const U = world.U;
-    const n = this.energy > 0.6 ? 3 : this.energy > 0.3 ? 2 : 1;
+    const n = Math.min(3, Math.floor(this.n / this.nStruct));
     if (!world.offline) {
       world.particles.burst(this.x, this.y, 22, { type: 'spark', color: this.genome.c1, glow: this.genome.glow, speed: 14 * U, life: 2.2, size: 2, g: -4, drag: 1.4 });
       world.particles.emit({ type: 'ring', x: this.x, y: this.y, size: 2 * U, grow: 14 * U, life: 1.4, color: this.genome.c2 });
     }
     for (let i = 0; i < n; i++) {
-      if (!world.room('bellwisp')) break;
+      if (!world.room('bellwisp') || this.n < this.nStruct * 0.5) break;
       world.layEgg(this, { x: this.x + rr(-4, 4) * U, y: this.y + rr(-4, 4) * U, hatch: rr(15, 35) * 60, float: true });
     }
     world.killFauna(this, 'burst');
   }
 
-  draw(ctx, world, amb) {
+  drawBasic(ctx, world, amb) {
     const g = this.genome;
     const s = this.scale * world.U;
     const t = world.t;
@@ -625,7 +673,7 @@ export class Bellwisp extends Creature {
     ctx.restore();
   }
 
-  drawGlow(ctx, world) {
+  glowBasic(ctx, world) {
     const s = this.scale * world.U;
     const k = 0.15 + world.night * 0.75;
     drawGlow(ctx, this.genome.glow, this.x, this.y + 0.9 * s, 4.5 * s, k * (0.4 + this.energy * 0.6));
@@ -690,7 +738,7 @@ export class Ribbonfin extends Creature {
       }
       const dx = this.tx - this.x, dy = this.ty - this.y;
       const d = Math.hypot(dx, dy) || 1;
-      const sp = 4.5 * U;
+      const sp = 4.5 * U * this.genome.spd;
       this.vx = lerp(this.vx, dx / d * sp, dt * 0.9);
       this.vy = lerp(this.vy, dy / d * sp * 0.6, dt * 0.9);
     }
@@ -705,21 +753,23 @@ export class Ribbonfin extends Creature {
 
   lifeTick(world, dt) {
     // plankton, richer when the pond's soil is rich, plus fruit that sinks in
+    const got = world.takePondN(dt / (8 * HR) * this.nStruct);
+    this.n += got;
     this.energy = Math.min(1, this.energy + dt / (9 * HR) * (0.6 + world.fertAt(world.pond.cx)));
     if (this.energy < 0.75 && chance(1 / 600, dt)) {
       const it = world.items.find((i) => i.inWater && !i.gone);
-      if (it) { world.consumeItem(it); this.energy = Math.min(1, this.energy + 0.4 * it.food); }
+      if (it) { this.energy = Math.min(1, this.energy + 0.4 * it.food); world.consumeItem(it, this); }
     }
     super.lifeTick(world, dt);
-    if (this.adult && this.energy > 0.8 && chance(1 / (3 * HR), dt) && world.room('ribbonfin')) {
-      this.energy -= 0.4;
+    if (chance(1 / (3 * HR), dt) && world.canBreed(this)) {
+      this.energy -= 0.3;
       const p = world.pond;
       const x = rr(p.x0 + 6 * world.U, p.x1 - 6 * world.U);
       world.layEgg(this, { x, y: world.pondBottom(x) - 1.2 * world.U, hatch: rr(50, 90) * 60, water: true });
     }
   }
 
-  draw(ctx, world, amb) {
+  drawBasic(ctx, world, amb) {
     const g = this.genome;
     const s = this.scale * world.U;
     const t = this.swim || 0;
@@ -770,7 +820,7 @@ export class Ribbonfin extends Creature {
     ctx.restore();
   }
 
-  drawGlow(ctx, world) {
+  glowBasic(ctx, world) {
     if (world.night < 0.1) return;
     const s = this.scale * world.U;
     drawGlow(ctx, this.genome.glow, this.x, this.y, 3.5 * s, world.night * 0.55);
@@ -823,7 +873,7 @@ export class Stiltstrider extends Creature {
     this.headOpen = lerp(this.headOpen, this.state === 'eat' ? 1 : 0.35 - this.rest * 0.3, dt * 2);
     if (this.trance(world, dt)) { this.reach = null; return; }
     if (sleepy) { this.state = 'idle'; this.reach = null; return; }
-    const sp = 2.6 * U * this.scale * (this.stage === 'elder' ? 0.7 : 1);
+    const sp = 2.6 * U * this.scale * (this.stage === 'elder' ? 0.7 : 1) * this.genome.spd;
     switch (this.state) {
       case 'idle':
         if (this.timer <= 0) this.choose(world);
@@ -847,8 +897,8 @@ export class Stiltstrider extends Creature {
         this.reach = fx != null ? [fx, fy] : null;
         if (this.timer <= 0) {
           const t = this.target;
-          if (t && t.kind === 'bulbstalk' && t.ripe > 0.5) { this.energy = Math.min(1, this.energy + 0.5 * t.ripe); t.ripe = 0; world.particles.burst(fx, fy, 6, { type: 'spark', color: t.genome.c3, speed: 8 * U, life: 1, g: 30 }); }
-          else if (t && t.food) { world.consumeItem(t); this.energy = Math.min(1, this.energy + 0.4); }
+          if (t && t.kind === 'bulbstalk' && t.ripe > 0.5) { this.energy = Math.min(1, this.energy + 0.5 * t.ripe); t.harvest(world, this); world.particles.burst(fx, fy, 6, { type: 'spark', color: t.genome.c3, speed: 8 * U, life: 1, g: 30 }); }
+          else if (t && t.food) { this.energy = Math.min(1, this.energy + 0.4); world.consumeItem(t, this); }
           this.target = null; this.reach = null; this.state = 'idle'; this.timer = rr(4, 12);
           this.maybeLay(world);
         }
@@ -889,19 +939,19 @@ export class Stiltstrider extends Creature {
   }
 
   maybeLay(world) {
-    if (!this.adult || this.energy < 0.85 || !world.room('stiltstrider') || this.stage === 'elder') return;
-    this.energy -= 0.45;
+    if (this.stage === 'elder' || !world.canBreed(this)) return;
+    this.energy -= 0.35;
     world.layEgg(this, { x: this.x - this.dir * 4 * world.U, y: world.groundY(this.x - this.dir * 4 * world.U), hatch: rr(90, 150) * 60 });
   }
 
   forage(world, dt) {
     if (this.energy < 0.85 && chance(1 / 2400, dt)) {
       const b = world.flora.find((p) => p.kind === 'bulbstalk' && p.ripe > 0.55);
-      if (b) { this.energy = Math.min(1, this.energy + 0.5 * b.ripe); b.ripe = 0; this.maybeLay(world); }
+      if (b) { this.energy = Math.min(1, this.energy + 0.5 * b.ripe); b.harvest(world, this); this.maybeLay(world); }
     }
   }
 
-  draw(ctx, world, amb) {
+  drawBasic(ctx, world, amb) {
     const g = this.genome;
     const s = this.scale * world.U;
     const rest = this.rest;
@@ -1015,7 +1065,7 @@ export class Stiltstrider extends Creature {
     this._head = [this.x + hx * s * this.dir, this.y + hy * s];
   }
 
-  drawGlow(ctx, world) {
+  glowBasic(ctx, world) {
     if (world.night < 0.1 || !this._head) return;
     const s = this.scale * world.U;
     drawGlow(ctx, this.genome.eye, this._head[0] + this.dir * 2 * s, this._head[1], 3 * s, world.night * (0.25 + (1 - this.rest) * 0.4));
@@ -1060,6 +1110,9 @@ export class Mindbloom extends Creature {
       this.timer = rr(80, 160) * (world.focusPod ? 0.6 : 1);
       this.pulseK = 1;
       world.mindPulse = { x: this.x, y: this.y, age: 0 };
+      world.act.pulses++;
+      const r2 = (60 * U) ** 2;
+      for (const c of world.fauna) if (c !== this && dist2(c.x, c.y, this.x, this.y) < r2) c._trance = 9;
       world.particles.emit({ type: 'ring', x: this.x, y: this.y, size: 5 * U, grow: 11 * U, life: 2.8, drag: 0, color: this.genome.glow });
       world.particles.emit({ type: 'ring', x: this.x, y: this.y, size: 3 * U, grow: 8 * U, life: 2.2, drag: 0, color: this.genome.c1 });
       world.onPulse?.();
@@ -1071,11 +1124,12 @@ export class Mindbloom extends Creature {
   }
 
   lifeTick(world, dt) {
-    if (world.focusPod) this.energy = Math.min(1, this.energy + dt / (1.5 * HR));
+    // it feeds on attention, and a little on light
+    this.energy = Math.min(1, this.energy + dt / (1.5 * HR) * (world.focusPod ? 1 : 0) + dt / (12 * HR) * (1 - world.night * 0.5));
     super.lifeTick(world, dt);
   }
 
-  draw(ctx, world, amb) {
+  drawBasic(ctx, world, amb) {
     const g = this.genome;
     const s = this.scale * world.U;
     const t = world.t;
@@ -1137,14 +1191,285 @@ export class Mindbloom extends Creature {
     ctx.restore();
   }
 
-  drawGlow(ctx, world) {
+  glowBasic(ctx, world) {
     const s = this.scale * world.U;
     const k = 0.2 + world.night * 0.4 + (this.pulseK || 0) * 0.6 + (world.focusPod ? 0.2 : 0);
     drawGlow(ctx, this.genome.glow, this.x, this.y - s, 9 * s, Math.min(1, k));
   }
 }
 
-export const CREATURES = { scuttler: Scuttler, petalmoth: Petalmoth, bellwisp: Bellwisp, ribbonfin: Ribbonfin, stiltstrider: Stiltstrider, mindbloom: Mindbloom };
+// ---------------------------------------------------------------- predators
+// Predators decide to hunt in world.huntTick() (1 Hz); here they only chase
+// down a prey that is already doomed, then digest. They bear live young.
+class Predator extends Creature {
+  lifeTick(world, dt) {
+    super.lifeTick(world, dt);
+    if (this.dead) return;
+    // when nothing living is around, they scavenge
+    if (this.energy < 0.35 && !this.hunt && chance(1 / 1800, dt)) this.scavenge(world);
+    if (chance(1 / (5 * HR), dt) && world.canBreed(this)) {
+      this.energy -= 0.3;
+      const o = { energy: 0.6 };
+      if (this.kind === 'mireeel') o.y = this.y; else if (this.kind === 'lancewing') o.y = this.y + 4 * world.U;
+      world.birth(this, o);
+    }
+  }
+  scavenge(world) {
+    const water = this.kind === 'mireeel';
+    if (this.kind === 'lancewing') return;
+    const it = world.nearestItem(this.x, 80 * world.U, (i) => i.type === 'husk' && i.grounded && i.inWater === water);
+    if (it) { this.energy = Math.min(1, this.energy + 0.3); world.consumeItem(it, this); }
+  }
+  get hitR() { return 7; }
+}
+
+export class Hookjaw extends Predator {
+  static kind = 'hookjaw';
+  static lifeRange = [40 * HR, 80 * HR];
+  static mature = 8 * HR;
+  static metabolism = 10 * HR;
+  static randomGenome(r) {
+    return {
+      c1: pick([P.plum, P.rust, P.olive, P.deepteal, P.ochre], r),
+      c2: pick([P.bone, P.sand, P.coral, P.peach], r),
+      c3: pick([P.ink, P.plum, P.deepteal], r),
+      eye: pick([P.glowAmber, P.glowLime, P.glowPink], r),
+      size: rr(0.9, 1.15), seed: Math.floor(r() * 1e9), spd: rr(0.9, 1.1), gl: rr(0.1, 0.5),
+    };
+  }
+  get hitDY() { return 2.5; }
+
+  findPrey(world) {
+    const U = world.U, ref = ECO.hunt.hookjaw.refuge;
+    let best = null, bs = Infinity;
+    if (world.count('scuttler') > ref) {
+      for (const c of world.fauna) {
+        if (c.kind !== 'scuttler' || c.dead || c._doomed || c.depth > 0.5) continue;
+        const d = Math.abs(c.x - this.x);
+        if (d > 90 * U) continue;
+        const score = c.energy + (c.inf ? -0.5 : 0) + (c.stage !== 'adult' ? -0.3 : 0) + d / (150 * U);
+        if (score < bs) { bs = score; best = c; }
+      }
+    }
+    // striders are slow breeders: leave their eggs alone when they're few
+    const striders = world.count('stiltstrider') + world.countEggs('stiltstrider');
+    for (const e of world.eggs) {
+      if (striders <= 3 || e.species !== 'stiltstrider' || e.gone) continue;
+      const d = Math.abs(e.x - this.x);
+      if (d < 70 * U && d / (150 * U) < bs) { bs = d / (150 * U); best = e; }
+    }
+    return best;
+  }
+
+  move(world, dt) {
+    const U = world.U;
+    this.timer -= dt;
+    this.jawOpen = lerp(this.jawOpen || 0, this.hunt ? 0.7 : this.state === 'eat' ? 0.5 : 0.08, dt * 3);
+    this.pounceK = Math.max(0, (this.pounceK || 0) - dt * 2);
+    if (this.trance(world, dt)) return;
+    const sp = 3 * U * this.genome.spd * (this.stage === 'elder' ? 0.7 : 1);
+    if (this.hunt) {
+      const prey = this.hunt.prey;
+      const tx = prey.x;
+      const dx = tx - this.x;
+      this.dir = Math.sign(dx) || this.dir;
+      const close = Math.abs(dx) < 4 * U;
+      this.state = close ? 'pounce' : 'stalk';
+      if (!world.inPond(this.x + this.dir * 3 * U, 3 * U)) { this.x += this.dir * sp * (close ? 2.2 : 1.4) * dt; this.gait = (this.gait || 0) + dt * sp / U * 0.6; }
+      if (close) this.pounceK = 1;
+      if (Math.abs(dx) < 1.5 * U || (close && world.inPond(tx, 2 * U))) { world.predate(this, prey); this.state = 'eat'; this.timer = 6; }
+    } else if (this.digest > 0) {
+      this.state = this.state === 'eat' && this.timer > 0 ? 'eat' : 'digest';
+    } else {
+      if (this.state !== 'walk' && this.timer <= 0) {
+        this.tx = clamp(this.x + rr(-35, 35) * U, 6 * U, world.W - 6 * U);
+        if (world.inPond(this.tx, 6 * U)) this.tx = this.x;
+        this.state = 'walk';
+      }
+      if (this.state === 'walk') {
+        const dx = this.tx - this.x;
+        if (Math.abs(dx) < U) { this.state = 'idle'; this.timer = rr(5, 20); }
+        else { this.dir = Math.sign(dx); this.x += this.dir * sp * 0.6 * dt; this.gait = (this.gait || 0) + dt * sp / U * 0.4; }
+      }
+    }
+    this.x = clamp(this.x, 5 * U, world.W - 5 * U);
+    this.y = world.groundY(this.x);
+  }
+
+  drawBasic(ctx, world, amb) {
+    const g = this.genome, s = this.scale * world.U;
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.scale(s * this.dir, s);
+    ctx.strokeStyle = amb.c(g.c3); ctx.lineWidth = 0.4;
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) { const hx = -4 + i * 2.6, sw = Math.sin((this.gait || 0) * 3 + i * 1.7) * 0.8; ctx.moveTo(hx, -1.6); ctx.lineTo(hx + 0.8, -2.8); ctx.lineTo(hx + sw, 0); }
+    ctx.stroke();
+    ctx.fillStyle = amb.c(g.c1);
+    ctx.beginPath(); ctx.ellipse(0, -2.4, 6 + (this.pounceK || 0), 1.7, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = amb.c(g.c2);
+    const j = this.jawOpen || 0;
+    ctx.beginPath(); ctx.moveTo(5.5, -2.6); ctx.quadraticCurveTo(8.5, -3.6 - j, 8.2, -1.8 - j * 2); ctx.lineTo(7, -2.6); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(5.5, -2); ctx.quadraticCurveTo(8.5, -1 + j, 8, -2.2 + j * 1.5); ctx.lineTo(7, -2); ctx.fill();
+    ctx.restore();
+  }
+  glowBasic(ctx, world) {
+    if (world.night < 0.1) return;
+    const s = this.scale * world.U;
+    drawGlow(ctx, this.genome.eye, this.x + this.dir * 5.5 * s, this.y - 3 * s, 2 * s, world.night * 0.6);
+  }
+}
+
+export class Lancewing extends Predator {
+  static kind = 'lancewing';
+  static lifeRange = [30 * HR, 60 * HR];
+  static mature = 6 * HR;
+  static metabolism = 8 * HR;
+  static randomGenome(r) {
+    return {
+      c1: pick([P.deepteal, P.plum, P.rust, P.ink], r),
+      c2: pick([P.mint, P.lilac, P.peach, P.cream], r),
+      c3: pick([P.coral, P.amber, P.sea], r),
+      glow: pick([P.glowCyan, P.glowViolet, P.glowPink], r),
+      size: rr(0.9, 1.15), seed: Math.floor(r() * 1e9), spd: rr(0.9, 1.15), gl: rr(0.1, 0.5),
+    };
+  }
+  findPrey(world) {
+    // only one dive in the glass at a time
+    for (const c of world.fauna) if (c.kind === 'lancewing' && c.hunt) return null;
+    if (world.count('petalmoth') <= ECO.hunt.lancewing.refuge) return null;
+    let best = null, bs = -Infinity;
+    for (const c of world.fauna) {
+      if (c.kind !== 'petalmoth' || c.dead || c._doomed || c.lured) continue;
+      const sc = world.huntMult(this, c) - Math.abs(c.x - this.x) / (world.W * 2);
+      if (sc > bs) { bs = sc; best = c; }
+    }
+    return best;
+  }
+  move(world, dt) {
+    const U = world.U;
+    this.flapT = (this.flapT || 0) + dt * (this.state === 'dive' ? 1 : 4);
+    if (this.trance(world, dt)) { this.vx *= 0.95; this.vy *= 0.95; this.x += this.vx * dt; this.y += this.vy * dt; return; }
+    let tx, ty, sp;
+    if (this.hunt) {
+      const prey = this.hunt.prey;
+      this.state = 'dive';
+      tx = prey.x; ty = prey.y; sp = 30 * U * this.genome.spd;
+      if (Math.hypot(tx - this.x, ty - this.y) < 2.5 * U) { world.predate(this, prey); this.state = 'climb'; this.timer = 4; }
+    } else if (this.state === 'climb' && this.timer > 0) {
+      this.timer -= dt;
+      tx = this.x + this.dir * 20 * U; ty = world.H * 0.15; sp = 10 * U;
+    } else {
+      this.state = this.digest > 0 ? 'digest' : 'soar';
+      const t = world.t * 0.05 + this.phase;
+      tx = world.W * (0.5 + 0.42 * Math.sin(t)); ty = world.H * (0.16 + 0.07 * Math.sin(t * 2.3)) + world.topInset;
+      sp = 7 * U;
+    }
+    const dx = tx - this.x, dy = ty - this.y, d = Math.hypot(dx, dy) || 1;
+    const k = Math.min(1, dt * (this.state === 'dive' ? 4 : 0.8));
+    this.vx = lerp(this.vx, dx / d * sp, k);
+    this.vy = lerp(this.vy, dy / d * sp, k);
+    this.x += this.vx * dt; this.y += this.vy * dt;
+    if (Math.abs(this.vx) > U) this.dir = Math.sign(this.vx);
+    this.fold = lerp(this.fold || 0, this.state === 'dive' ? 1 : 0, dt * 4);
+    this.x = clamp(this.x, 2 * U, world.W - 2 * U);
+    this.y = clamp(this.y, world.topInset + 4 * U, world.groundY(this.x) - 3 * U);
+  }
+  drawBasic(ctx, world, amb) {
+    const g = this.genome, s = this.scale * world.U;
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    if (this.state === 'dive') ctx.rotate(Math.atan2(this.vy, this.vx) - (this.dir < 0 ? Math.PI : 0));
+    ctx.scale(s * this.dir, s);
+    const f = 1 - (this.fold || 0) * 0.8, fl = Math.sin(this.flapT || 0) * 0.5 * f;
+    ctx.fillStyle = amb.c(g.c2, 0.5);
+    ctx.beginPath(); ctx.ellipse(-0.5, -1.5 - fl, 5 * f + 0.5, 0.9, -0.15 - fl * 0.3, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(-0.5, 1.5 + fl, 5 * f + 0.5, 0.9, 0.15 + fl * 0.3, 0, TAU); ctx.fill();
+    ctx.fillStyle = amb.c(g.c1);
+    ctx.beginPath(); ctx.moveTo(5, 0); ctx.lineTo(-4, -0.45); ctx.lineTo(-4, 0.45); ctx.fill();
+    ctx.restore();
+  }
+  glowBasic(ctx, world) {
+    if (world.night < 0.1) return;
+    drawGlow(ctx, this.genome.glow, this.x, this.y, 3 * this.scale * world.U, world.night * 0.4);
+  }
+}
+
+export class Mireeel extends Predator {
+  static kind = 'mireeel';
+  static lifeRange = [40 * HR, 80 * HR];
+  static mature = 8 * HR;
+  static metabolism = 16 * HR;
+  static randomGenome(r) {
+    return {
+      c1: pick([P.olive, P.deepteal, P.plum, P.ink], r),
+      c2: pick([P.sand, P.mauve, P.rust], r),
+      c3: pick([P.bone, P.mint], r),
+      glow: pick([P.glowLime, P.glowAmber, P.glowCyan], r),
+      size: rr(0.9, 1.15), seed: Math.floor(r() * 1e9), spd: rr(0.9, 1.1), gl: rr(0.3, 0.7),
+    };
+  }
+  findPrey(world) {
+    let best = null, bd = Infinity;
+    for (const e of world.eggs) {
+      if (e.species !== 'ribbonfin' || e.gone) continue;
+      const d = Math.abs(e.x - this.x);
+      if (d < bd) { bd = d; best = e; }
+    }
+    if (best) return best;
+    if (world.count('ribbonfin') <= ECO.hunt.mireeel.refuge) return null;
+    for (const c of world.fauna) {
+      if (c.kind !== 'ribbonfin' || c.dead || c._doomed || c.adult) continue;
+      const d = Math.abs(c.x - this.x);
+      if (d < bd) { bd = d; best = c; }
+    }
+    return best;
+  }
+  move(world, dt) {
+    const U = world.U, p = world.pond;
+    this.swim = (this.swim || 0) + dt * (this.hunt ? 6 : 1.5);
+    this.jawOpen = lerp(this.jawOpen || 0, this.hunt ? 0.8 : 0.1, dt * 3);
+    if (this.trance(world, dt)) return;
+    let tx, ty, sp;
+    if (this.hunt) {
+      this.state = 'strike';
+      tx = this.hunt.prey.x; ty = this.hunt.prey.y; sp = 9 * U * this.genome.spd;
+      if (Math.hypot(tx - this.x, ty - this.y) < 2 * U) { world.predate(this, this.hunt.prey); this.state = 'eat'; this.timer = 5; }
+    } else {
+      this.timer -= dt;
+      this.state = this.timer > 0 && this.state === 'eat' ? 'eat' : 'lurk';
+      if (this.tx == null || this.timer < -15) { this.tx = rr(p.x0 + 5 * U, p.x1 - 5 * U); this.timer = 0; }
+      tx = this.tx; ty = world.pondBottom(this.tx) - 2.5 * U; sp = 1.5 * U;
+    }
+    const dx = tx - this.x, dy = ty - this.y, d = Math.hypot(dx, dy) || 1;
+    this.vx = lerp(this.vx, d > U ? dx / d * sp : 0, Math.min(1, dt * 2));
+    this.vy = lerp(this.vy, d > U ? dy / d * sp : 0, Math.min(1, dt * 2));
+    this.x = clamp(this.x + this.vx * dt, p.x0 + 3 * U, p.x1 - 3 * U);
+    this.y = clamp(this.y + this.vy * dt, p.y + 2 * U, Math.max(p.y + 2.2 * U, world.pondBottom(this.x) - 1.5 * U));
+    if (Math.abs(this.vx) > 0.3 * U) this.dir = Math.sign(this.vx);
+    this.ang = clamp(this.vy / (5 * U), -0.6, 0.6) * this.dir;
+  }
+  drawBasic(ctx, world, amb) {
+    const g = this.genome, s = this.scale * world.U, t = this.swim || 0;
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.ang || 0);
+    ctx.scale(s * this.dir, s);
+    ctx.strokeStyle = amb.c(g.c1, 0.9); ctx.lineWidth = 1.3; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(3, 0);
+    for (let k = 1; k <= 8; k++) ctx.lineTo(3 - k * 1.4, Math.sin(t * 2 - k * 0.8) * k * 0.15);
+    ctx.stroke();
+    ctx.fillStyle = amb.c(g.c2);
+    ctx.beginPath(); ctx.ellipse(3.6, 0, 1.4, 0.8 + (this.jawOpen || 0) * 0.4, 0, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+  glowBasic(ctx, world) {
+    const s = this.scale * world.U;
+    drawGlow(ctx, this.genome.glow, this.x + this.dir * 5 * s, this.y - 2 * s, 2 * s, 0.2 + world.night * 0.5);
+  }
+}
+
+export const CREATURES = { scuttler: Scuttler, petalmoth: Petalmoth, bellwisp: Bellwisp, ribbonfin: Ribbonfin, stiltstrider: Stiltstrider, mindbloom: Mindbloom, hookjaw: Hookjaw, lancewing: Lancewing, mireeel: Mireeel };
 
 // ---------------------------------------------------------------- eggs
 export class Egg {

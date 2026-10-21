@@ -14,7 +14,8 @@ const PERF_HINT = {
   balanced: '24 frames a second. Smooth enough, gentle on the battery.',
   smooth: 'Up to 60 frames a second at full resolution. Prettiest, hungriest.',
 };
-const FLORA_ORDER = ['fanfern', 'bulbstalk', 'lanternlily', 'puffcap', 'tubebloom', 'coilspire'];
+const FLORA_ORDER = ['fanfern', 'bulbstalk', 'lanternlily', 'puffcap', 'tubebloom', 'coilspire', 'snaplure', 'dewveil', 'gloomcap'];
+const RING_C = 2 * Math.PI * 15; // circumference of the focus-bar progress ring (r=15)
 
 export class UI {
   constructor(app) {
@@ -120,6 +121,7 @@ export class UI {
       const act = b.dataset.act;
       if (act === 'start') { this.garden.start(id); this.app.haptic(6); }
       else if (act === 'pause') this.garden.pause(id);
+      else if (act === 'target') { this.garden.cycleTarget(id); this.app.haptic?.(4); }
       else if (act === 'done') { this.app.completeTask(id); }
       else if (act === 'del') {
         if (b.classList.contains('armed')) this.garden.remove(id);
@@ -152,9 +154,13 @@ export class UI {
     $('#task-list').innerHTML = pending.length ? pending.map((t) => {
       const el = g.elapsed(t);
       const active = t.state === 'active';
-      return `<li data-id="${t.id}" class="${active ? 'active' : ''}">
+      const ripe = el >= g.targetMs(t);
+      const cls = [active && 'active', ripe && 'ripe'].filter(Boolean).join(' ');
+      return `<li data-id="${t.id}" class="${cls}">
         <i class="pod" style="background:${t.c1}"></i>
-        <div class="t"><b>${escapeHtml(t.title)}</b><span data-el="${t.id}">${active ? 'growing · ' + fmtDuration(el) : el > 0 ? 'resting · ' + fmtDuration(el) + ' tended' : 'a seed in the soil'}</span></div>
+        <div class="t"><b>${escapeHtml(t.title)}</b>
+          <div class="meta"><span data-el="${t.id}">${this.taskStatus(t)}</span><button class="chip" data-act="target" aria-label="Focus target ${t.targetMin} minutes, tap to change">${t.targetMin}m</button></div>
+          ${active || el > 0 ? `<i class="prog"><i data-pg="${t.id}" style="width:${(g.progress(t) * 100).toFixed(1)}%"></i></i>` : ''}</div>
         <div class="acts">
           <button class="icon-btn" data-act="${active ? 'pause' : 'start'}" aria-label="${active ? 'Pause' : 'Start'}">${active ? PAUSE : PLAY}</button>
           <button class="icon-btn accent" data-act="done" aria-label="Finish">${DONE}</button>
@@ -180,13 +186,44 @@ export class UI {
     return ` ${n} more and something new will arrive.`;
   }
 
+  // "12:03 / 25:00" style status line for a task row
+  taskStatus(t) {
+    const g = this.garden;
+    const el = g.elapsed(t);
+    const of = `${fmtDuration(el)} / ${fmtDuration(g.targetMs(t))}`;
+    if (t.state === 'active') return (el >= g.targetMs(t) ? 'in bloom · ' : 'growing · ') + of;
+    return el > 0 ? 'resting · ' + of : 'a seed in the soil';
+  }
+
   tickTasks() {
-    const t = this.garden.active;
-    if (t) $('#focus-time').textContent = fmtDuration(this.garden.elapsed(t));
-    if (this.openSheet === 'tasks' && t) {
-      const el = $(`[data-el="${t.id}"]`);
-      if (el) el.textContent = 'growing · ' + fmtDuration(this.garden.elapsed(t));
+    const g = this.garden;
+    const t = g.active;
+    if (!t) return;
+    const el = g.elapsed(t);
+    if (el >= g.targetMs(t) && !t.chimed) {
+      t.chimed = true;
+      this.app.focusReached?.(t);
+      this.toast(`“${t.title}” has reached ${t.targetMin} minutes. Finish it, or keep growing.`, true, 7000);
+      g.changed(); // persists, and re-renders the list and focus bar
+      return;
     }
+    this.updateFocusTime(t);
+    if (this.openSheet === 'tasks') {
+      const s = $(`[data-el="${t.id}"]`);
+      if (s) s.textContent = this.taskStatus(t);
+      const pg = $(`[data-pg="${t.id}"]`);
+      if (pg) pg.style.width = `${(g.progress(t) * 100).toFixed(1)}%`;
+    }
+  }
+
+  updateFocusTime(t) {
+    const g = this.garden;
+    const el = g.elapsed(t);
+    const ripe = el >= g.targetMs(t);
+    $('#focus-now').textContent = fmtDuration(el);
+    $('#focus-target').textContent = fmtDuration(g.targetMs(t));
+    $('#focus-arc').style.strokeDashoffset = (RING_C * (1 - g.progress(t))).toFixed(2);
+    $('#focus-bar').classList.toggle('ripe', ripe);
   }
 
   renderFocus() {
@@ -195,9 +232,10 @@ export class UI {
     bar.hidden = !t;
     if (t) {
       $('#focus-title').textContent = t.title;
-      $('#focus-time').textContent = fmtDuration(this.garden.elapsed(t));
-      bar.querySelector('.dot').style.background = t.glow;
-      bar.querySelector('.dot').style.boxShadow = `0 0 10px ${t.glow}`;
+      const dot = bar.querySelector('.dot');
+      dot.style.background = t.glow;
+      dot.style.boxShadow = `0 0 10px ${t.glow}`;
+      this.updateFocusTime(t);
     }
   }
 
@@ -230,7 +268,7 @@ export class UI {
     const counts = {};
     for (const c of w.fauna) counts[c.kind] = (counts[c.kind] || 0) + 1;
     const fc = w.countFlora();
-    const kinds = [...FAUNA_KINDS, 'gloamwhale', ...FLORA_ORDER];
+    const kinds = [...FAUNA_KINDS, 'gloamwhale', ...FLORA_ORDER].filter((k) => SPECIES[k]);
     const el = $('#tab-species');
     el.innerHTML = kinds.map((k) => {
       const s = SPECIES[k];
@@ -294,6 +332,16 @@ export class UI {
       groundY: () => S * 0.86, mindPulse: null, focusPod: null, lastTouch: null,
     };
     const amb = this.portraitAmb;
+    try {
+      this.drawPortrait(ctx, S, w, kind, src, stub, amb);
+    } catch (err) {
+      console.warn('portrait failed for', kind, err);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, S, S);
+    }
+  }
+
+  drawPortrait(ctx, S, w, kind, src, stub, amb) {
     if (kind === 'gloamwhale') {
       ctx.fillStyle = '#8fa7b4'; ctx.globalAlpha = 0.7;
       ctx.beginPath(); ctx.ellipse(S / 2, S * 0.45, S * 0.42, S * 0.1, -0.1, 0, Math.PI * 2); ctx.fill();
@@ -302,7 +350,7 @@ export class UI {
       ctx.globalAlpha = 1;
       return;
     }
-    if (SPECIES[kind].kind === 'flora') {
+    if (SPECIES[kind]?.kind === 'flora') {
       const p = src && src.kind === kind ? new Plant({ ...src, growth: Math.max(0.9, src.growth), wither: 0, x: S / 2 }) : new Plant({ kind, growth: 1, x: S / 2, genome: undefined });
       if (kind === 'bulbstalk') p.ripe = 0.8;
       stub.U = S * 0.78 / (p.genome.h * 1.15);
@@ -321,7 +369,10 @@ export class UI {
       ribbonfin: [S / 15, S * 0.62, S * 0.5],
       stiltstrider: [S / 30, S * 0.5, S * 0.93],
       mindbloom: [S / 22, S * 0.5, S * 0.32],
-    }[kind];
+      hookjaw: [S / 16, S * 0.45, S * 0.7],
+      lancewing: [S / 12, S * 0.5, S * 0.5],
+      mireeel: [S / 18, S * 0.5, S * 0.5],
+    }[kind] || [S / 14, S * 0.5, S * 0.6];
     stub.U = frame[0] / genome.size;
     c.x = frame[1]; c.y = frame[2];
     if (kind === 'mindbloom') c.ax = c.x / S;
@@ -409,7 +460,7 @@ export class UI {
       $('#insp-name').textContent = obj.name;
       $('#insp-latin').textContent = `${sp.name} · ${sp.latin}`;
       const stage = obj.stage;
-      const doing = { eat: 'feeding', feed: 'feeding', perch: 'resting on the clock', walk: 'wandering', fly: 'flying', dig: 'burrowing', tunnel: 'tunnelling', rise: 'surfacing', jump: 'leaping!', swim: 'swimming', idle: obj.rest > 0.5 ? 'asleep' : 'pausing' }[obj.state] || 'drifting';
+      const doing = { eat: 'feeding', feed: 'feeding', perch: 'resting on the clock', walk: 'wandering', fly: 'flying', dig: 'burrowing', tunnel: 'tunnelling', rise: 'surfacing', jump: 'leaping!', swim: 'swimming', stalk: 'stalking', pounce: 'pouncing!', digest: 'digesting', soar: 'soaring', dive: 'diving!', climb: 'climbing', lurk: 'lurking', strike: 'striking!', idle: obj.rest > 0.5 ? 'asleep' : 'pausing' }[obj.state] || 'drifting';
       facts = [['Stage', stage], ['Age', fmtAge(obj.age)], ['Generation', obj.gen], ['Now', obj._trance > 0 ? 'entranced' : kind === 'bellwisp' ? (w.night > 0.5 ? 'glowing' : 'basking') : kind === 'mindbloom' ? 'watching' : doing]];
       $('#insp-energy').style.width = `${clamp(obj.energy, 0, 1) * 100}%`;
       $('#insp-origin').textContent = obj.origin;
@@ -425,10 +476,12 @@ export class UI {
       facts = [['Age', fmtAge(obj.age)], ['Grown', `${Math.round(obj.growth * 100)}%`]];
       if (obj.kind === 'bulbstalk') facts.push(['Fruit', obj.ripe > 0.95 ? 'ripe' : `${Math.round(obj.ripe * 100)}%`]);
       if (obj.kind === 'lanternlily') facts.push(['Nectar', `${Math.round(obj.nectar * 100)}%`]);
+      if (obj.kind === 'snaplure' || obj.kind === 'dewveil') facts.push(['Trap', obj.closed > 0.5 ? 'digesting' : 'set']);
       if (obj.wither > 0) facts.push(['State', 'withering']);
       $('#insp-energy').style.width = `${clamp(obj.growth, 0, 1) * 100}%`;
       $('#insp-origin').textContent = `Soil here: ${Math.round(w.fertAt(obj.x) * 100)}% rich`;
     }
+    if (!isEgg && obj.inf > 0) facts.push(['Health', 'infected by gloomcap fungus']);
     $('#insp-facts').innerHTML = facts.map(([a, b]) => `<dt>${a}</dt><dd>${escapeHtml(String(b))}</dd>`).join('');
     if (full || isCreature) this.portrait($('#insp-portrait'), isEgg ? kind : obj);
   }

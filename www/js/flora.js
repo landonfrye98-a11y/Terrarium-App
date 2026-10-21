@@ -2,6 +2,11 @@
 // the animals, and rot back into the ground.
 import { P, FAMILIES } from './palette.js';
 import { TAU, rr, pick, chance, uid, mixHex, drawGlow, mulberry32, smooth } from './util.js';
+import { ECO } from './species.js';
+
+// Optional richer artwork, registered by art.js when it is present.
+let FLORA_ART = {};
+export function setFloraArt(a) { FLORA_ART = a || {}; }
 
 const H = 3600;
 
@@ -13,6 +18,9 @@ const DEF = {
   puffcap:     { grow: 0.7 * H, life: [16 * H, 36 * H], h: [4, 8] },
   tubebloom:   { grow: 1.5 * H, life: [30 * H, 70 * H], h: [5, 12] },
   coilspire:   { grow: 4.0 * H, life: [48 * H, 90 * H], h: [30, 52] },
+  snaplure:    { grow: 1.5 * H, life: [60 * H, 120 * H], h: [5, 8] },
+  dewveil:     { grow: 2.0 * H, life: [60 * H, 120 * H], h: [14, 24] },
+  gloomcap:    { grow: 0.6 * H, life: [5 * H, 8 * H], h: [3, 6] },
 };
 export const FLORA_KINDS = Object.keys(DEF);
 
@@ -25,6 +33,9 @@ function genome(kind, r) {
     case 'lanternlily': g.c1 = pick([P.moss, P.olive, P.deepteal], r); g.c2 = pick([P.salmon, P.peach, P.rose, P.lilac, P.cream], r); g.c3 = pick([P.rust, P.plum, P.coral], r); g.glow = pick([P.glowAmber, P.glowPink, P.glowCyan], r); break;
     case 'puffcap': g.c1 = pick([P.bone, P.cream, P.sand], r); g.c2 = pick([P.coral, P.mauve, P.rust, P.teal, P.ochre], r); g.c3 = pick([P.cream, P.bone, P.peach], r); break;
     case 'tubebloom': g.c1 = pick([P.mauve, P.rose, P.salmon, P.teal, P.lilac], r); g.c2 = pick([P.cream, P.peach, P.mint], r); g.glow = pick(FAMILIES.glow, r); g.n = 3 + Math.floor(r() * 4); break;
+    case 'snaplure': g.c1 = pick([P.olive, P.deepteal, P.moss], r); g.c2 = pick([P.rose, P.coral, P.salmon, P.rust], r); g.c3 = pick([P.cream, P.bone], r); g.glow = pick([P.glowAmber, P.glowPink], r); break;
+    case 'dewveil': g.c1 = pick([P.lilac, P.mint, P.bone, P.peach], r); g.c2 = pick([P.mauve, P.teal, P.rose], r); g.c3 = pick([P.cream, P.mint], r); g.glow = pick([P.glowCyan, P.glowViolet], r); g.w = 5 + r() * 4; g.n = 8 + Math.floor(r() * 5); break;
+    case 'gloomcap': g.c1 = pick([P.bone, P.cream, P.lilac], r); g.c2 = pick([P.mauve, P.plum, P.olive], r); g.c3 = pick([P.chartreuse, P.mint], r); g.n = 3 + Math.floor(r() * 3); break;
     case 'coilspire': g.c1 = pick([P.deepteal, P.olive, P.plum], r); g.c2 = pick([P.sea, P.mint, P.chartreuse, P.salmon], r); g.glow = pick(FAMILIES.glow, r); g.turns = 2.5 + r() * 2; break;
   }
   return g;
@@ -41,20 +52,33 @@ export class Plant {
     this.ripe = 0;       // bulbstalk fruit
     this.pollen = 0;     // bulbstalk pollination boost
     this.nectar = 1;     // lantern lily
+    this.n = 0;          // nutrient in the plant's body
+    this.store = 0;      // nutrient packed into fruit or nectar
+    if (o.kind === 'snaplure' || o.kind === 'dewveil') { this.closed = 0; this.snapT = 0; this.digest = 0; this.caught = 0; this.lastMeal = 0; }
     Object.assign(this, o);
     if (!this.genome) this.genome = genome(this.kind, Math.random);
     if (!this.life) this.life = rr(...DEF[this.kind].life);
   }
+
+  // per-plant random numbers, made once instead of on every frame
+  rand() { return this._r || (this._r = Array.from({ length: 32 }, mulberry32(this.genome.seed))); }
 
   get height() { return this.genome.h * (0.25 + 0.75 * smooth(this.growth)) * (1 - this.wither * 0.35); }
 
   tick(world, dt) {
     this.age += dt;
     const def = DEF[this.kind];
+    const nMax = ECO.nPlant[this.kind];
     if (this.growth < 1) {
+      // growth draws nutrient from the soil; a starved plant stalls
       const f = 0.35 + world.fertAt(this.x) * 1.3;
-      this.growth = Math.min(1, this.growth + (dt / def.grow) * f);
-      world.addFert(this.x, -dt * 0.000004);
+      const want = Math.min(1, this.growth + (dt / def.grow) * f);
+      if (this.kind !== 'gloomcap' && this.kind !== 'snaplure' && this.kind !== 'dewveil') {
+        this.n += world.takeN(this.x, Math.max(0, nMax * want - this.n));
+        this.growth = Math.min(want, Math.max(this.growth, this.n / nMax));
+      } else {
+        this.growth = want; // these feed on prey or the bodies they rise from
+      }
     }
     if (this.age > this.life) {
       this.wither = Math.min(1, this.wither + dt / 2400);
@@ -63,19 +87,33 @@ export class Plant {
     }
     if (this.kind === 'bulbstalk' && this.growth > 0.7) {
       const rate = (1 + this.pollen * 2.5) / 2700;
-      this.ripe = Math.min(1, this.ripe + dt * rate);
+      this.store += world.takeN(this.x, Math.max(0, Math.min(ECO.nFruit, this.store + dt * rate * ECO.nFruit) - this.store));
+      this.ripe = Math.min(1, this.store / ECO.nFruit);
       this.pollen = Math.max(0, this.pollen - dt / 5400);
-      if (this.ripe >= 1 && chance(1 / 1800, dt)) {
+      if (this.ripe >= 0.99 && chance(1 / 1800, dt)) {
         const p = this.tip(world);
-        world.dropItem('fruit', p.x, p.y, this.genome.c3);
-        this.ripe = 0;
+        world.dropItem('fruit', p.x, p.y, this.genome.c3, this.store);
+        this.store = 0; this.ripe = 0;
       }
     } else if (this.kind === 'lanternlily') {
-      this.nectar = Math.min(1, this.nectar + dt / 1200);
+      if (this.store < ECO.nNectar) this.store += world.takeN(this.x, Math.min(ECO.nNectar - this.store, dt / 1200 * ECO.nNectar));
+      this.nectar = this.store / ECO.nNectar;
     } else if (this.kind === 'puffcap' && this.growth > 0.8 && !world.offline) {
       if (chance(1 / 300, dt)) this.puff(world);
+    } else if (this.kind === 'gloomcap' && this.growth > 0.5 && !world.offline && chance(1 / 90, dt)) {
+      this.puff(world);
     }
     if (this.kind === 'puffcap' && this.growth > 0.8 && chance(1 / 2400, dt)) world.trySporeFromPuffcap(this);
+  }
+
+  // an animal drinks or eats what the plant has stored
+  harvest(world, eater, share = 1) {
+    const n = this.store * share;
+    this.store -= n;
+    if (this.kind === 'bulbstalk') this.ripe = this.store / ECO.nFruit;
+    if (this.kind === 'lanternlily') this.nectar = this.store / ECO.nNectar;
+    world.feed(eater, n, this.x);
+    return n;
   }
 
   puff(world) {
@@ -99,10 +137,14 @@ export class Plant {
     if (this.kind === 'lanternlily') {
       return { x: this.x + (h * 0.42 + sw * h * 0.3) * (this.genome.lean >= 0 ? 1 : -1), y: gy - h * 0.82 };
     }
+    if (this.kind === 'dewveil') return { x: this.x, y: world.topInset + h * 0.85 };
     return { x: this.x + Math.sin(sw) * h, y: gy - Math.cos(sw) * h };
   }
 
   draw(ctx, world, amb) {
+    const art = FLORA_ART[this.kind];
+    if (art) { art.draw(ctx, this, world, amb); return; }
+    if (this.kind === 'snaplure' || this.kind === 'dewveil' || this.kind === 'gloomcap') { this.drawSimple(ctx, world, amb); return; }
     const U = world.U, gy = world.groundY(this.x);
     const g = this.genome;
     const fade = 1 - this.wither * 0.6;
@@ -118,11 +160,11 @@ export class Plant {
       case 'grass': {
         ctx.strokeStyle = amb.c(wc(g.c1), fade);
         ctx.lineWidth = 0.42;
-        const rnd = mulberry32(g.seed);
+        const R = this.rand(); let ri = 0;
         ctx.beginPath();
         for (let i = 0; i < g.n; i++) {
-          const bx = (rnd() - 0.5) * 2.4;
-          const hh = h * (0.55 + rnd() * 0.45);
+          const bx = (R[ri++ & 31] - 0.5) * 2.4;
+          const hh = h * (0.55 + R[ri++ & 31] * 0.45);
           const s = this.sway(world, 0.9) + (bx * 0.25);
           ctx.moveTo(bx, 0);
           ctx.quadraticCurveTo(bx + s * hh * 0.25, -hh * 0.6, bx + s * hh * 0.6, -hh);
@@ -253,20 +295,20 @@ export class Plant {
         ctx.fillStyle = amb.c(wc(g.c2), fade);
         ctx.beginPath(); ctx.ellipse(tx, ty, r, r * 0.8, s * 0.3, Math.PI, TAU); ctx.fill();
         ctx.fillStyle = amb.c(g.c1, 0.85 * fade);
-        const rnd = mulberry32(g.seed);
+        const R = this.rand(); let ri = 0;
         for (let k = 0; k < 5; k++) {
-          const a = Math.PI + 0.35 + rnd() * (Math.PI - 0.7);
-          const rr2 = r * (0.3 + rnd() * 0.5);
-          ctx.beginPath(); ctx.arc(tx + Math.cos(a) * rr2, ty + Math.sin(a) * rr2 * 0.8, 0.25 + rnd() * 0.35, 0, TAU); ctx.fill();
+          const a = Math.PI + 0.35 + R[ri++ & 31] * (Math.PI - 0.7);
+          const rr2 = r * (0.3 + R[ri++ & 31] * 0.5);
+          ctx.beginPath(); ctx.arc(tx + Math.cos(a) * rr2, ty + Math.sin(a) * rr2 * 0.8, 0.25 + R[ri++ & 31] * 0.35, 0, TAU); ctx.fill();
         }
         break;
       }
       case 'tubebloom': {
-        const rnd = mulberry32(g.seed);
+        const R = this.rand(); let ri = 0;
         const open = world.night;
         for (let k = 0; k < g.n; k++) {
-          const bx = (k - (g.n - 1) / 2) * 1.25 + (rnd() - 0.5) * 0.5;
-          const hh = h * (0.5 + rnd() * 0.5);
+          const bx = (k - (g.n - 1) / 2) * 1.25 + (R[ri++ & 31] - 0.5) * 0.5;
+          const hh = h * (0.5 + R[ri++ & 31] * 0.5);
           const s = this.sway(world, 0.03) * hh;
           ctx.strokeStyle = amb.c(wc(g.c1), fade);
           ctx.lineWidth = 1.05;
@@ -309,7 +351,36 @@ export class Plant {
   }
 
   // additive glow pass (night)
+  // plain fallback for the newer plants when art.js isn't loaded
+  drawSimple(ctx, world, amb) {
+    const U = world.U, g = this.genome, h = this.height;
+    ctx.save();
+    if (this.kind === 'dewveil') {
+      ctx.translate(this.x, world.topInset);
+      ctx.scale(U, U);
+      ctx.strokeStyle = amb.c(g.c1, 0.6);
+      ctx.lineWidth = 0.2;
+      ctx.beginPath();
+      for (let i = 0; i < g.n; i++) {
+        const x = (i / (g.n - 1) - 0.5) * 2 * g.w;
+        ctx.moveTo(x, 0); ctx.lineTo(x + Math.sin(world.t * 0.6 + i) * 0.8, h * (0.7 + (i % 3) * 0.12));
+      }
+      ctx.stroke();
+    } else {
+      ctx.translate(this.x, world.groundY(this.x));
+      ctx.scale(U, U);
+      ctx.fillStyle = amb.c(this.kind === 'gloomcap' ? g.c1 : g.c2);
+      ctx.beginPath(); ctx.ellipse(0, -h * 0.7, h * 0.35, h * 0.3 * (1 - (this.closed || 0) * 0.5), 0, 0, TAU); ctx.fill();
+      ctx.strokeStyle = amb.c(g.c1);
+      ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -h * 0.5); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   drawGlow(ctx, world) {
+    const art = FLORA_ART[this.kind];
+    if (art) { art.glow(ctx, this, world); return; }
     const n = world.night;
     if (n < 0.05 || this.growth < 0.4) return;
     const U = world.U;
@@ -331,24 +402,25 @@ export class Plant {
 
   // roots in the soil cutaway
   drawRoots(ctx, world, amb) {
-    if (this.kind === 'grass' || this.growth < 0.3) return;
+    if (this.kind === 'grass' || this.kind === 'dewveil' || this.kind === 'gloomcap' || this.growth < 0.3) return;
     const U = world.U, gy = world.groundY(this.x);
     const depth = Math.min(this.height * 0.55, 14) * U;
-    const rnd = mulberry32(this.genome.seed + 7);
+    const R = this.rand(); let ri = 16;
     ctx.strokeStyle = amb.c(P.bone, 0.18 * (1 - this.wither));
     ctx.lineWidth = Math.max(0.6, U * 0.18);
     ctx.beginPath();
     const n = this.kind === 'coilspire' || this.kind === 'bulbstalk' ? 3 : 2;
     for (let i = 0; i < n; i++) {
-      const dx = (rnd() - 0.5) * depth * 1.1;
+      const dx = (R[ri++ & 31] - 0.5) * depth * 1.1;
       ctx.moveTo(this.x, gy + U);
-      ctx.quadraticCurveTo(this.x + dx * 0.2, gy + depth * 0.5, this.x + dx, gy + depth * (0.6 + rnd() * 0.5));
+      ctx.quadraticCurveTo(this.x + dx * 0.2, gy + depth * 0.5, this.x + dx, gy + depth * (0.6 + R[ri++ & 31] * 0.5));
     }
     ctx.stroke();
   }
 
   hit(world, x, y) {
     const U = world.U, gy = world.groundY(this.x);
+    if (this.kind === 'dewveil') { const w = this.genome.w * U; return x > this.x - w && x < this.x + w && y > world.topInset && y < world.topInset + this.height * U; }
     const w = Math.max(3, this.genome.h * 0.3) * U;
     return x > this.x - w && x < this.x + w && y < gy + U && y > gy - this.height * U - 2 * U;
   }
@@ -373,6 +445,7 @@ export function sproutWeights(world) {
     tubebloom: tasks >= 6 ? 1.6 : 0,
     coilspire: tasks >= 10 && c.coilspire < 3 ? 0.8 : 0,
   };
+  // traps and gloomcaps never sprout at random: they spread on their own terms
   return w;
 }
 

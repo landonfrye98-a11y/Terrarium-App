@@ -2,7 +2,7 @@ name: Deploy web app to GitHub Pages
 
 on:
   push:
-    branches: [claude/virtual-terrarium-app-xodtnq, main]
+    branches: [main]
     paths: ['www/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 

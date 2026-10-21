@@ -1,17 +1,27 @@
 // The world: terrain, soil, populations and the slow sim that runs them.
-// Live, life-logic ticks once a second (motion runs per frame). When the app
-// has been closed, the same logic is replayed in coarse steps so the glass
-// keeps living while you're away.
-import { P } from './palette.js';
-import { skyAt } from './palette.js';
-import { SPECIES, FAUNA_KINDS, makeName } from './species.js';
-import { Plant, sproutWeights, pickKind } from './flora.js';
+//
+// Every ecological outcome (births, hunts, infection, rot) is decided in
+// tick(), once a second live and in coarse steps while the app was closed,
+// with the same rules both ways. Per-frame code only animates outcomes that
+// were already decided.
+//
+// Nutrient is conserved: it moves between soil, plants, animals, eggs,
+// carcasses and seed banks but is never created, except through inject()
+// (finished tasks, arrivals), which the ledger records in stats.nIn.
+import { P, skyAt, nightAt } from './palette.js';
+import { SPECIES, FAUNA_KINDS, PREDATORS, ECO, makeName } from './species.js';
+import { Plant, sproutWeights, pickKind, FLORA_KINDS } from './flora.js';
 import { CREATURES, Egg, Gloamwhale } from './fauna.js';
 import { Particles } from './particles.js';
-import { clamp, lerp, rr, chance, fbm, mulberry32, hashStr, uid, bumpUid, TAU } from './util.js';
+import { clamp, lerp, rr, chance, fbm, mulberry32, hashStr, uid, bumpUid, hexToRgb } from './util.js';
 
 const SOIL_N = 40;
+const NB = 16; // spatial buckets across the glass
 const HR = 3600;
+const SAVE_V = 2;
+const MAX_FAUNA = 36; // drawing budget for the whole glass
+const RESIST = { stiltstrider: 0.2, hookjaw: 0.2, mireeel: 0.3, lancewing: 0.3 };
+const LAYER = { scuttler: 0, stiltstrider: 0, hookjaw: 0, petalmoth: 1, bellwisp: 1, lancewing: 1, mindbloom: 1, ribbonfin: 2, mireeel: 2 };
 
 export class World {
   constructor(seed) {
@@ -21,27 +31,39 @@ export class World {
     this.eggs = [];
     this.items = [];
     this.visitors = [];
-    this.soil = new Array(SOIL_N).fill(0.55);
-    this.stats = { tasksDone: 0, births: 0, deaths: 0, discovered: {}, maxGen: {}, created: Date.now(), nextWhale: 0 };
+    this.ripples = [];
+    this.soil = new Float64Array(SOIL_N).fill(0.55);
+    this.bank = {};
+    this.stats = { tasksDone: 0, births: 0, deaths: 0, discovered: {}, maxGen: {}, created: Date.now(), nextWhale: 0, n0: 0, nIn: 0, goneAt: {}, pendingArrivals: [], nextArrival: 0 };
     this.logs = [];
     this.particles = new Particles(240);
     this.t = 0;
     this.simTime = Date.now();
+    this.clockFn = null; // harness hook: replaces Date.now()
     this.offline = false;
     this.gust = 0;
     this._gustT = 0;
     this._lifeAcc = 0;
+    this._tickN = 0;
     this.mindPulse = null;
     this.focusPod = null;
     this.lastTouch = null;
     this.skyMode = 'real';
     this.topInset = 0;
     this.listeners = {};
+    this.pop = {};
+    this.eggPop = {};
+    this.bk = Array.from({ length: NB }, () => []);
+    this.mush = new Float32Array(NB);
+    this.act = { births: 0, deaths: 0, pollinations: 0, hunts: 0, kills: 0, pulses: 0, splashes: 0, hatches: 0 };
+    this.hunting = 0;
+    this.traps = [];
     this.updateSky();
   }
 
   on(ev, fn) { (this.listeners[ev] ||= []).push(fn); }
   emit(ev, data) { for (const fn of this.listeners[ev] || []) fn(data); }
+  now() { return this.clockFn ? this.clockFn() : Date.now(); }
 
   // ------------------------------------------------------------ layout
   layout(W, H, topInset = 0) {
@@ -52,16 +74,20 @@ export class World {
     this.U = Math.min(W, H) / 100;
     this.groundBase = H * (this.portrait ? 0.735 : 0.75);
     const R = this.portrait ? Math.min(W * 0.34, H * 0.19) : Math.min(H * 0.22, W * 0.2);
-    this.clock = { cx: W / 2, cy: this.portrait ? H * 0.4 : H * 0.4, R };
+    this.clock = { cx: W / 2, cy: H * 0.4, R };
     const px0 = W * (this.portrait ? 0.6 : 0.64), px1 = W * (this.portrait ? 0.93 : 0.88);
     this.pond = { x0: px0, x1: px1, cx: (px0 + px1) / 2, rx: (px1 - px0) / 2, y: this.groundBase + this.U * 1.6, depth: Math.min(H * 0.1, (H - this.groundBase) * 0.55) };
+    // ground height, sampled once per pixel: groundY is read dozens of times a frame
+    const n = Math.ceil(W) + 2;
+    this.hm = new Float32Array(n);
+    for (let x = 0; x < n; x++) this.hm[x] = this.groundAt(x);
     if (oW && (oW !== W || oH !== H)) {
       const sx = W / oW, sy = H / oH;
       for (const list of [this.flora, this.fauna, this.eggs, this.items]) for (const e of list) { e.x *= sx; if (e.y != null) e.y *= sy; }
     }
   }
 
-  groundY(x) {
+  groundAt(x) {
     const p = this.pond;
     const base = this.groundBase + fbm(x / this.W * 2.2, this.seed % 1000, 3) * this.U * 3.2;
     if (p && x > p.x0 - 6 * this.U && x < p.x1 + 6 * this.U) {
@@ -70,25 +96,69 @@ export class World {
     }
     return base;
   }
+  groundY(x) {
+    const hm = this.hm;
+    if (!(x > 0)) return hm[0];
+    const i = x | 0;
+    if (i >= hm.length - 1) return hm[hm.length - 1];
+    return hm[i] + (hm[i + 1] - hm[i]) * (x - i);
+  }
   inPond(x, margin = 0) { const p = this.pond; return x > p.x0 - margin && x < p.x1 + margin; }
   pondBottom(x) {
     const p = this.pond;
     const q = clamp((x - p.cx) / p.rx, -1, 1);
     return p.y + p.depth * Math.sqrt(1 - q * q);
   }
+  bucketOf(x) { return clamp((x * NB / this.W) | 0, 0, NB - 1); }
 
-  // ------------------------------------------------------------ soil
+  // ------------------------------------------------------------ nutrient
   soilIdx(x) { return clamp(Math.floor(x / this.W * SOIL_N), 0, SOIL_N - 1); }
-  fertAt(x) { return this.soil[this.soilIdx(x)]; }
-  addFert(x, a) {
-    const i = this.soilIdx(x);
-    this.soil[i] = clamp(this.soil[i] + a, 0, 1);
-    if (i > 0) this.soil[i - 1] = clamp(this.soil[i - 1] + a * 0.4, 0, 1);
-    if (i < SOIL_N - 1) this.soil[i + 1] = clamp(this.soil[i + 1] + a * 0.4, 0, 1);
+  fertAt(x) { return Math.min(1.5, this.soil[this.soilIdx(x)]); }
+  depositN(x, a) {
+    if (!(a > 0)) return;
+    const i = this.soilIdx(x), s = this.soil;
+    const l = i > 0, r = i < SOIL_N - 1;
+    s[i] += a * (0.6 + (l ? 0 : 0.2) + (r ? 0 : 0.2));
+    if (l) s[i - 1] += a * 0.2;
+    if (r) s[i + 1] += a * 0.2;
+  }
+  takeN(x, want) {
+    if (!(want > 0)) return 0;
+    const i = this.soilIdx(x), s = this.soil;
+    let got = Math.min(want, s[i]);
+    s[i] -= got;
+    for (const j of [i - 1, i + 1]) {
+      if (got >= want || j < 0 || j >= SOIL_N) continue;
+      const g = Math.min(want - got, s[j] * 0.5);
+      s[j] -= g; got += g;
+    }
+    return got;
+  }
+  // the pond's water draws on the soil cells under it
+  takePondN(want) {
+    const p = this.pond;
+    return this.takeN(p.x0 + Math.random() * (p.x1 - p.x0), want);
+  }
+  // external input (finished tasks, arrivals): the only way new nutrient enters
+  inject(x, a) {
+    if (!(a > 0)) return;
+    this.depositN(x, a);
+    this.stats.nIn += a;
+  }
+  addFert(x, a) { if (a > 0) this.inject(x, a); else this.takeN(x, -a); }
+  nStruct(kind, g) { return ECO.nBody[kind] * (g?.size || 1); }
+  totalN() {
+    let n = 0;
+    for (const v of this.soil) n += v;
+    for (const p of this.flora) n += (p.n || 0) + (p.store || 0);
+    for (const c of this.fauna) n += c.n || 0;
+    for (const e of this.eggs) n += e.n || 0;
+    for (const i of this.items) n += i.n || 0;
+    for (const k in this.bank) n += this.bank[k].n;
+    return n;
   }
 
   // ------------------------------------------------------------ time & sky
-  get date() { return new Date(this.simTime); }
   hourAt(ms) {
     if (this.skyMode === 'day') return 12.5;
     if (this.skyMode === 'night') return 0.5;
@@ -98,22 +168,46 @@ export class World {
   }
   updateSky() {
     this.hour = this.hourAt(this.simTime);
+    if (this.offline) { this.night = nightAt(this.hour); return; }
     this.sky = skyAt(this.hour);
     this.night = this.sky.night;
   }
 
-  // ------------------------------------------------------------ queries
-  count(kind) { let n = 0; for (const f of this.fauna) if (f.kind === kind) n++; return n; }
-  countEggs(kind) { let n = 0; for (const e of this.eggs) if (e.species === kind) n++; return n; }
+  // ------------------------------------------------------------ census
+  // Rebuilt once per tick; spawn/kill/lay/hatch keep it exact in between.
+  rebuildIndex() {
+    const pop = this.pop, ep = this.eggPop;
+    for (const k of FAUNA_KINDS) { pop[k] = 0; ep[k] = 0; }
+    for (const b of this.bk) b.length = 0;
+    for (const c of this.fauna) { pop[c.kind]++; this.bk[this.bucketOf(c.x)].push(c); }
+    for (const e of this.eggs) ep[e.species]++;
+    this.mush.fill(0);
+    this.traps.length = 0;
+    for (const p of this.flora) {
+      if (p.kind === 'gloomcap') this.mush[this.bucketOf(p.x)] += 1 - p.wither;
+      else if (p.kind === 'snaplure' || p.kind === 'dewveil') this.traps.push(p);
+    }
+    this._sortDirty = true;
+  }
+  count(kind) { return this.pop[kind] || 0; }
+  countEggs(kind) { return this.eggPop[kind] || 0; }
   countFlora() { const c = {}; for (const p of this.flora) c[p.kind] = (c[p.kind] || 0) + 1; return c; }
   unlocked(kind) { return this.stats.tasksDone >= (SPECIES[kind]?.unlock ?? 0); }
-  cap(kind) {
-    const base = SPECIES[kind].cap;
-    const bonus = Math.floor(Math.max(0, this.stats.tasksDone - SPECIES[kind].unlock) / 12);
-    return Math.min(base + bonus, base + 3);
-  }
-  room(kind) { return this.unlocked(kind) && this.count(kind) + this.countEggs(kind) < this.cap(kind); }
+  ceil(kind) { return SPECIES[kind].cap; }
+  cap(kind) { return this.ceil(kind); }
+  room(kind) { return this.unlocked(kind) && this.count(kind) + this.countEggs(kind) < this.ceil(kind); }
   floraCap() { return clamp(Math.round(this.W / 13), 18, 46); }
+
+  // Breeding is limited by food (nutrient for a child's body) and gets
+  // steeply harder only as a species nears the performance ceiling.
+  canBreed(c) {
+    if (!c.adult || c.inf || c.energy < 0.7 || !this.unlocked(c.kind)) return false;
+    if (c.n < 2 * this.nStruct(c.kind, c.genome)) return false;
+    if (this.fauna.length + this.eggs.length >= MAX_FAUNA) return false;
+    const crowd = (this.count(c.kind) + this.countEggs(c.kind)) / this.ceil(c.kind);
+    if (crowd >= 1) return false;
+    return Math.random() < 1 - crowd ** 4 + (c.genome.gl || 0) * 0.1;
+  }
 
   nearestItem(x, range, filter) {
     let best = null, bd = range;
@@ -128,7 +222,7 @@ export class World {
   // ------------------------------------------------------------ log
   log(msg, kind = 'life') {
     this.logs.push({ t: this.simTime, msg, kind });
-    if (this.logs.length > 120) this.logs.splice(0, this.logs.length - 120);
+    if (this.logs.length > 140) this.logs.splice(0, this.logs.length - 140);
     this.emit('log', { msg, kind, offline: this.offline });
   }
 
@@ -137,7 +231,10 @@ export class World {
     const C = CREATURES[kind];
     const c = new C(o);
     if (!o.x) this.placeNew(c);
+    if (c.n == null) c.n = this.nStruct(kind, c.genome);
     this.fauna.push(c);
+    this.pop[kind] = (this.pop[kind] || 0) + 1;
+    this._sortDirty = true;
     this.discover(kind);
     return c;
   }
@@ -145,9 +242,10 @@ export class World {
   placeNew(c) {
     const U = this.U;
     switch (c.kind) {
-      case 'ribbonfin': c.x = rr(this.pond.x0 + 4 * U, this.pond.x1 - 4 * U); c.y = this.pond.y + this.pond.depth * 0.4; break;
+      case 'ribbonfin': case 'mireeel': c.x = rr(this.pond.x0 + 4 * U, this.pond.x1 - 4 * U); c.y = this.pond.y + this.pond.depth * 0.5; break;
       case 'bellwisp': c.x = rr(0.1, 0.9) * this.W; c.y = rr(this.H * 0.15, this.groundBase - 30 * U); break;
       case 'petalmoth': c.x = rr(0.1, 0.9) * this.W; c.y = rr(this.H * 0.3, this.groundBase - 10 * U); break;
+      case 'lancewing': c.x = rr(0.1, 0.9) * this.W; c.y = rr(this.H * 0.12, this.H * 0.3); break;
       case 'mindbloom': c.ax = rr(0.12, 0.3); c.x = c.ax * this.W; c.y = this.H * 0.15; break;
       default: {
         let x;
@@ -164,65 +262,142 @@ export class World {
     }
   }
 
+  // live birth (scuttlers split, predators bear young): the parent pays for the body
   birth(parent, o = {}) {
     const { genome, mutation } = parent.childGenome();
-    const c = this.spawn(parent.kind, { x: parent.x, y: parent.y, ...o, genome, gen: parent.gen + 1, origin: `Child of ${parent.name}`, age: 0, energy: o.energy ?? 0.55 });
+    const nb = Math.min(parent.n * 0.5, this.nStruct(parent.kind, genome));
+    parent.n -= nb;
+    const c = this.spawn(parent.kind, { x: parent.x, y: parent.y, ...o, genome, n: nb, gen: parent.gen + 1, origin: `Child of ${parent.name}`, age: 0, energy: o.energy ?? 0.55 });
     this.stats.births++;
+    this.act.births++;
     this.stats.maxGen[c.kind] = Math.max(this.stats.maxGen[c.kind] || 1, c.gen);
     const sp = SPECIES[c.kind].name;
-    this.log(mutation ? `${c.name} the ${sp} was born to ${parent.name} — with ${mutation}.` : `${c.name}, a ${sp}, was born to ${parent.name}.`, mutation ? 'mutation' : 'birth');
+    this.log(mutation ? `${c.name} the ${sp} was born to ${parent.name}, with ${mutation}.` : `${c.name}, a ${sp}, was born to ${parent.name}.`, mutation ? 'mutation' : 'birth');
     return c;
   }
 
   layEgg(parent, o) {
     const { genome, mutation } = parent.childGenome();
-    const e = new Egg({ species: parent.kind, genome, gen: parent.gen + 1, parentName: parent.name, mutation, ...o });
+    const nb = Math.min(parent.n * 0.5, this.nStruct(parent.kind, genome));
+    parent.n -= nb;
+    const e = new Egg({ species: parent.kind, genome, gen: parent.gen + 1, parentName: parent.name, mutation, n: nb, ...o });
+    // a share of every clutch goes dormant in the soil: the seed bank
+    if (Math.random() < 0.12) { this.bankAdd(parent.kind, genome, nb); return null; }
     this.eggs.push(e);
+    this.eggPop[parent.kind] = (this.eggPop[parent.kind] || 0) + 1;
     const what = { petalmoth: 'spun a cocoon', stiltstrider: 'laid an egg', bellwisp: 'released a spore', ribbonfin: 'laid roe in the pond' }[parent.kind] || 'left an egg';
     if (parent.kind !== 'bellwisp') this.log(`${parent.name} ${what}.`, 'egg');
     return e;
   }
 
   hatch(e) {
+    if (e.gone) return;
     e.gone = true;
-    if (!this.unlocked(e.species) || this.count(e.species) >= this.cap(e.species) + 1) return;
-    const c = this.spawn(e.species, { x: e.x, y: e.y, genome: e.genome, gen: e.gen, origin: e.origin || `Child of ${e.parentName}`, energy: 0.6 });
+    this._dirty = true;
+    this.eggPop[e.species] = Math.max(0, (this.eggPop[e.species] || 1) - 1);
+    if (!this.unlocked(e.species) || this.count(e.species) >= this.ceil(e.species) || this.fauna.length >= MAX_FAUNA) {
+      this.bankAdd(e.species, e.genome, e.n || 0);
+      return;
+    }
+    const c = this.spawn(e.species, { x: e.x, y: e.y, genome: e.genome, n: e.n || 0, gen: e.gen, origin: e.origin || `Child of ${e.parentName}`, energy: 0.6 });
     if (c.kind === 'ribbonfin') c.y = Math.min(c.y, this.pondBottom(c.x) - 2 * this.U);
     if (c.kind === 'petalmoth') c.y = Math.min(c.y, this.groundY(c.x) - 4 * this.U);
     this.stats.births++;
+    this.act.hatches++;
     this.stats.maxGen[c.kind] = Math.max(this.stats.maxGen[c.kind] || 1, c.gen);
     const sp = SPECIES[c.kind].name;
-    this.log(e.mutation ? `${c.name} the ${sp} hatched — with ${e.mutation}.` : `${c.name} the ${sp} hatched${e.parentName ? ` (parent: ${e.parentName})` : ''}.`, e.mutation ? 'mutation' : 'birth');
+    this.log(e.mutation ? `${c.name} the ${sp} hatched, with ${e.mutation}.` : `${c.name} the ${sp} hatched${e.parentName ? ` (parent: ${e.parentName})` : ''}.`, e.mutation ? 'mutation' : 'birth');
     if (!this.offline) this.particles.burst(e.x, e.y, 10, { type: 'spark', color: c.genome.c1, glow: c.genome.glow, speed: 10 * this.U, life: 1.2, g: 10 });
+  }
+
+  // eggs eaten by predators
+  eatEgg(e, eater) {
+    if (e.gone) return;
+    e.gone = true;
+    this._dirty = true;
+    this.eggPop[e.species] = Math.max(0, (this.eggPop[e.species] || 1) - 1);
+    this.feed(eater, e.n || 0, e.x);
+    eater.energy = Math.min(1, eater.energy + 0.35);
+  }
+
+  // eater keeps the assimilated share of nutrient, the rest goes to the soil
+  feed(eater, n, x) {
+    const keep = n * ECO.assim;
+    eater.n = (eater.n || 0) + keep;
+    this.depositN(x, n - keep);
   }
 
   killFauna(c, cause) {
     if (c.dead) return;
     c.dead = true;
+    c.cause = cause;
+    this._dirty = true;
+    this.pop[c.kind] = Math.max(0, (this.pop[c.kind] || 1) - 1);
+    if (this.pop[c.kind] === 0 && this.countEggs(c.kind) === 0) this.stats.goneAt[c.kind] = this.simTime;
+    if (c.hunt) this.endHunt(c);
     this.stats.deaths++;
+    this.act.deaths++;
     const sp = SPECIES[c.kind].name;
     const age = c.age / HR;
-    const msg = cause === 'burst'
-      ? `${c.name} the ${sp} burst into spores after ${age.toFixed(1)} hours.`
-      : `${c.name} the ${sp} died of age after ${age < 30 ? age.toFixed(1) + ' hours' : (age / 24).toFixed(1) + ' days'}.`;
-    this.log(msg, 'death');
-    if (c.kind !== 'bellwisp' && c.kind !== 'mindbloom') {
-      const x = c.kind === 'ribbonfin' ? clamp(c.x, this.pond.x0, this.pond.x1) : c.x;
-      this.dropItem('husk', x, Math.min(c.y, this.groundY(x)) - 2 * this.U, c.genome.c1, c.kind === 'stiltstrider' ? 2 : 1);
+    const ageStr = age < 30 ? age.toFixed(1) + ' hours' : (age / 24).toFixed(1) + ' days';
+    let n = c.n || 0;
+    c.n = 0;
+    if (cause === 'eaten') { this.emit('death', c); return; } // predate() moved the nutrient
+    // a dormant spore of every adult goes into the seed bank
+    if (c.adult && cause !== 'fungus' && Math.random() < (PREDATORS.includes(c.kind) ? 0.8 : 0.3) && n > 0) {
+      const share = n * 0.3;
+      this.bankAdd(c.kind, c.genome, share);
+      n -= share;
+    }
+    const gx = clamp(c.x, 2 * this.U, this.W - 2 * this.U);
+    if (cause === 'burst') {
+      this.log(`${c.name} the ${sp} burst into spores after ${age.toFixed(1)} hours.`, 'death');
+      this.depositN(gx, n);
+    } else if (cause === 'fungus') {
+      this.log(`${c.name} the ${sp} was taken by the gloomcap fungus. Pale stalks are rising from the body.`, 'death');
+      const x = this.inPond(gx, 2 * this.U) ? this.pond.x0 - 4 * this.U : gx;
+      const p = new Plant({ kind: 'gloomcap', x, growth: 0.1, n: Math.max(0, n - 0.01) });
+      this.depositN(x, Math.min(n, 0.01));
+      this.flora.push(p);
+      this.discover('gloomcap');
+    } else if (cause === 'starved') {
+      this.log(`${c.name} the ${sp} starved.`, 'death');
+      this.dropCarcass(c, gx, n);
+    } else {
+      this.log(`${c.name} the ${sp} died of age after ${ageStr}.`, 'death');
+      this.dropCarcass(c, gx, n);
     }
     this.emit('death', c);
   }
 
-  onPlantDeath(p) {
-    this.addFert(p.x, 0.15);
-    if (p.kind !== 'grass') this.dropItem('husk', p.x, this.groundY(p.x) - this.U, P.ochre, 0.6);
+  dropCarcass(c, x, n) {
+    if (c.kind === 'mindbloom' || c.kind === 'bellwisp') { this.depositN(x, n); return; }
+    const wx = c.kind === 'ribbonfin' || c.kind === 'mireeel' ? clamp(c.x, this.pond.x0, this.pond.x1) : x;
+    const y = Math.min(c.y, this.groundY(wx)) - 2 * this.U;
+    this.dropItem('husk', wx, y, c.genome.c1, n);
   }
 
-  dropItem(type, x, y, color, food = 1) {
-    if (this.items.length > 40) return;
-    this.items.push({ id: uid(), type, x, y, vy: 0, color, food, age: 0, grounded: false, inWater: false });
+  onPlantDeath(p) {
+    const n = (p.n || 0) + (p.store || 0);
+    p.n = 0; p.store = 0;
+    if (p.kind === 'grass' || p.kind === 'gloomcap' || p.kind === 'dewveil') { this.depositN(p.x, n); return; }
+    this.depositN(p.x, n * 0.4);
+    this.dropItem('husk', p.x, this.groundY(p.x) - this.U, P.ochre, n * 0.6);
   }
-  consumeItem(it) { it.gone = true; }
+
+  // food items carry their nutrient; over the item limit it goes straight to soil
+  dropItem(type, x, y, color, n) {
+    if (this.items.length >= 40) { this.depositN(x, n); return; }
+    this.items.push({ id: uid(), type, x, y, vy: 0, color, n, food: type === 'fruit' ? 1 : 0.8, age: 0, grounded: false, inWater: false });
+  }
+  consumeItem(it, eater) {
+    if (it.gone) return;
+    it.gone = true;
+    this._dirty = true;
+    if (eater) this.feed(eater, it.n || 0, it.x);
+    else this.depositN(it.x, it.n || 0);
+    it.n = 0;
+  }
 
   pollinate(moth) {
     let best = null, bd = 60 * this.U;
@@ -231,28 +406,255 @@ export class World {
       const d = Math.abs(p.x - moth.x);
       if (d < bd) { bd = d; best = p; }
     }
-    if (best) {
-      best.pollen = Math.min(2, best.pollen + 0.6);
-      if (!this.offline) {
-        const tp = best.tip(this);
-        for (let i = 0; i < 6; i++) this.particles.emit({ type: 'mote', x: moth.x, y: moth.y, vx: (tp.x - moth.x) * rr(0.3, 0.6), vy: (tp.y - moth.y) * rr(0.3, 0.6), drag: 0.8, life: 2, size: 1.4, color: P.glowAmber, wob: 6 });
-      }
+    if (!best) return;
+    best.pollen = Math.min(2, best.pollen + 0.6);
+    this.act.pollinations++;
+    if (!this.offline) {
+      const tp = best.tip(this);
+      for (let i = 0; i < 6; i++) this.particles.emit({ type: 'mote', x: moth.x, y: moth.y, vx: (tp.x - moth.x) * rr(0.3, 0.6), vy: (tp.y - moth.y) * rr(0.3, 0.6), drag: 0.8, life: 2, size: 1.4, color: P.glowAmber, wob: 6 });
     }
   }
 
+  // puffcaps release bellwisp spores, but only from the bellwisp seed bank
   trySporeFromPuffcap(p) {
-    if (!this.room('bellwisp')) return;
-    const g = CREATURES.bellwisp.randomGenome(Math.random);
-    const e = new Egg({ species: 'bellwisp', genome: g, gen: 1, origin: 'Rose from a puffcap', x: p.x, y: this.groundY(p.x) - p.height * this.U - 3 * this.U, hatch: rr(20, 40) * 60, float: true });
+    const b = this.bank.bellwisp;
+    if (!b || b.count < 1 || !this.room('bellwisp')) return;
+    const { genome, n } = this.bankTake('bellwisp');
+    const e = new Egg({ species: 'bellwisp', genome, n, gen: 1, origin: 'Rose from a puffcap', x: p.x, y: this.groundY(p.x) - p.height * this.U - 3 * this.U, hatch: rr(20, 40) * 60, float: true });
     this.eggs.push(e);
+    this.eggPop.bellwisp = (this.eggPop.bellwisp || 0) + 1;
   }
 
   splash(x, y, k = 1) {
     if (this.offline) return;
+    this.act.splashes++;
     const U = this.U;
     for (let i = 0; i < 10 * k; i++) this.particles.emit({ type: 'drop', x: x + rr(-1, 1) * U, y, vx: rr(-8, 8) * U * 0.5, vy: -rr(6, 16) * U * k, g: 40 * U, drag: 0.2, life: 1.2, size: rr(1.2, 2.4), color: P.mint });
     this.particles.emit({ type: 'ring', x, y, size: U, grow: 8 * U, life: 1, color: P.cream });
     this.ripples.push({ x, t: 0 });
+  }
+
+  // ------------------------------------------------------------ seed bank
+  bankAdd(kind, genome, n) {
+    const b = (this.bank[kind] ||= { count: 0, n: 0, g: [] });
+    b.count++;
+    b.n += n;
+    if (b.g.length < 6) b.g.push(genome);
+    else b.g[(Math.random() * 6) | 0] = genome;
+  }
+  bankTake(kind) {
+    const b = this.bank[kind];
+    const n = b.n / b.count;
+    b.n -= n;
+    b.count--;
+    const genome = b.g[(Math.random() * b.g.length) | 0];
+    if (b.count <= 0) { this.depositN(rr(0, this.W), b.n); delete this.bank[kind]; }
+    return { genome, n };
+  }
+
+  // a species that has dwindled is reseeded from its dormant bank
+  bankTick(dt) {
+    for (const kind of FAUNA_KINDS) {
+      const b = this.bank[kind];
+      if (!b) continue;
+      // dormant spores slowly die back into the soil
+      const decay = b.n * (1 - Math.pow(0.5, dt / ECO.bankHalfLife));
+      if (decay > 0) { b.n -= decay; this.depositN(rr(0, this.W), decay); }
+      if (b.count > 0 && b.n < 1e-6) { delete this.bank[kind]; continue; }
+      if (!this.unlocked(kind) || kind === 'mindbloom') continue;
+      if (this.count(kind) + this.countEggs(kind) > ECO.bankFloor) continue;
+      if (!chance(1 / (1.5 * HR), dt)) continue;
+      const { genome, n } = this.bankTake(kind);
+      const c = this.spawn(kind, { genome, n, age: 0, energy: 0.6, origin: 'Woke from the seed bank' });
+      this.stats.births++;
+      this.act.hatches++;
+      this.log(`${c.name}, a ${SPECIES[kind].name.toLowerCase()}, woke from a dormant spore in the soil.`, 'birth');
+    }
+  }
+
+  // ------------------------------------------------------------ hunting
+  // Decided here at 1 Hz. Live, the predator then has a few seconds to reach
+  // its prey (its move() chases); offline the kill commits immediately.
+  huntTick(dt) {
+    this.hunting = 0;
+    for (const c of this.fauna) {
+      if (c.dead || !PREDATORS.includes(c.kind)) continue;
+      if (c.digest > 0) { c.digest -= dt; continue; }
+      if (c.hunt) {
+        this.hunting++;
+        const prey = c.hunt.prey;
+        if (prey.dead || prey.gone) { this.endHunt(c); continue; }
+        if (this.t > c.hunt.until) this.predate(c, prey);
+        continue;
+      }
+      if (c.energy > 0.6 || !c.adult) continue;
+      const prey = c.findPrey(this);
+      if (!prey) continue;
+      const h = ECO.hunt[c.kind];
+      let rate = h.a * this.huntMult(c, prey) * (c.genome.spd || 1);
+      rate /= 1 + 0.5 * (this.count(c.kind) - 1); // predators get in each other's way
+      if (!chance(rate, dt)) continue;
+      this.act.hunts++;
+      if (this.offline) { this.predate(c, prey); continue; }
+      c.hunt = { prey, until: this.t + 10 };
+      if (!prey.species) prey._doomed = c.id;
+      this.hunting++;
+      this.log(`${c.name} the ${SPECIES[c.kind].name.toLowerCase()} is hunting.`, 'hunt');
+    }
+    this.trapTick(dt);
+  }
+
+  // how much easier a given prey is to catch
+  huntMult(pred, prey) {
+    if (prey.species) return 1.2; // eggs can't run
+    let m = 1;
+    const g = prey.genome;
+    // contrast against its background: plainer creatures blend in
+    m *= 0.5 + this.contrast(prey);
+    // glowing at night gives you away
+    m *= 1 + (g.gl || 0) * this.night * 1.5;
+    if (prey._trance > 0) m *= 3;
+    if (prey.inf) m *= 2;
+    if (prey.stage === 'juvenile' || prey.stage === 'elder') m *= 1.6;
+    m /= g.spd || 1;
+    return m;
+  }
+
+  contrast(c) {
+    if (c._cam == null) {
+      const bg = c.kind === 'petalmoth' || c.kind === 'bellwisp' ? ['#c3ddc9', '#1a1f3e'] : c.kind === 'ribbonfin' ? ['#66b3ad', '#1b4352'] : ['#a69a60', '#262c38'];
+      const d = (a, b) => { const x = hexToRgb(a), y = hexToRgb(b); return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]) / 441; };
+      c._cam = [d(c.genome.c1, bg[0]), d(c.genome.c1, bg[1])];
+    }
+    return lerp(c._cam[0], c._cam[1], this.night);
+  }
+
+  predate(pred, prey) {
+    this.endHunt(pred);
+    if (prey.dead || prey.gone) return;
+    const h = ECO.hunt[pred.kind];
+    pred.digest = h.digest;
+    pred.energy = Math.min(1, pred.energy + (prey.species ? 0.4 : 0.7));
+    this.act.kills++;
+    if (prey.species) { this.eatEgg(prey, pred); this.log(`${pred.name} ate a ${SPECIES[prey.species].name.toLowerCase()} egg.`, 'hunt'); return; }
+    this.feed(pred, prey.n || 0, prey.x);
+    prey.n = 0;
+    this.log(`${pred.name} the ${SPECIES[pred.kind].name.toLowerCase()} caught ${prey.name} the ${SPECIES[prey.kind].name.toLowerCase()}.`, 'hunt');
+    this.killFauna(prey, 'eaten');
+    if (!this.offline) this.particles.burst(prey.x, prey.y, 8, { type: 'spark', color: prey.genome.c1, speed: 8 * this.U, life: 0.9, g: 20 * this.U });
+    pred.onKill?.(this, prey);
+  }
+  endHunt(pred) {
+    if (!pred.hunt) return;
+    const prey = pred.hunt.prey;
+    if (prey && prey._doomed === pred.id) prey._doomed = null;
+    pred.hunt = null;
+  }
+
+  // carnivorous plants lure their prey in; the kill happens when it arrives
+  trapTick(dt) {
+    for (const p of this.traps) {
+      if (p.dead) continue;
+      if (p.digest > 0) {
+        p.digest -= dt;
+        if (p.digest <= 0) { p.closed = 0; p.caught = 0; }
+        continue;
+      }
+      if (p.growth < 0.8 || p.wither > 0) continue;
+      if (p.lured) {
+        if (p.lured.dead || this.t > p.lureUntil) { if (p.lured.lured === p) p.lured.lured = null; p.lured = null; }
+        else continue;
+      }
+      const preyKind = p.kind === 'snaplure' ? 'petalmoth' : 'bellwisp';
+      const h = ECO.hunt[p.kind];
+      if (this.count(preyKind) <= h.refuge) continue;
+      if (!chance(h.a * (p.kind === 'snaplure' ? 1 + this.night : 1), dt)) continue;
+      let prey = null, bd = Infinity;
+      for (const c of this.fauna) {
+        if (c.kind !== preyKind || c.dead || c.lured || c._doomed) continue;
+        const d = Math.abs(c.x - p.x) / (0.5 + this.contrast(c)) / (1 + (c.genome.gl || 0) * this.night);
+        if (d < bd) { bd = d; prey = c; }
+      }
+      if (!prey) continue;
+      this.act.hunts++;
+      if (this.offline) { this.trapKill(p, prey); continue; }
+      p.lured = prey; p.lureUntil = this.t + 25;
+      prey.lured = p;
+    }
+  }
+
+  trapKill(p, prey) {
+    if (prey.dead) return;
+    const h = ECO.hunt[p.kind];
+    p.lured = null;
+    prey.lured = null;
+    p.closed = 1; p.caught = 1; p.snapT = 0.6; p.digest = h.digest; p.lastMeal = p.age;
+    const keep = (prey.n || 0) * ECO.assim;
+    const room = Math.max(0, ECO.nPlant[p.kind] * 3 - p.n);
+    p.n += Math.min(keep, room);
+    this.depositN(p.x, (prey.n || 0) - Math.min(keep, room));
+    prey.n = 0;
+    this.act.kills++;
+    this.log(`A ${SPECIES[p.kind].name.toLowerCase()} caught ${prey.name} the ${SPECIES[prey.kind].name.toLowerCase()}.`, 'hunt');
+    this.killFauna(prey, 'eaten');
+    if (!this.offline) this.particles.burst(prey.x, prey.y, 8, { type: 'spark', color: prey.genome.c1, speed: 6 * this.U, life: 0.8, g: 10 * this.U });
+  }
+
+  // well-fed traps seed new traps next to them; starving ones wither
+  trapSlowTick() {
+    const c = this.countFlora();
+    for (const p of this.traps) {
+      if (p.dead || p.growth < 1) continue;
+      const kind = p.kind;
+      const maxN = kind === 'snaplure' ? 4 : 2;
+      if (p.age - (p.lastMeal ?? 0) > 30 * HR && p.life > p.age) { p.life = p.age; this.log(`A starving ${SPECIES[kind].name.toLowerCase()} has begun to wither.`, 'death'); }
+      if (p.n >= 2 * ECO.nPlant[kind] && (c[kind] || 0) < maxN && this.flora.length < this.floraCap()) {
+        const nb = ECO.nPlant[kind] * 0.5;
+        p.n -= nb;
+        let x = clamp(p.x + rr(-25, 25) * this.U, 4 * this.U, this.W - 4 * this.U);
+        if (kind === 'snaplure' && this.inPond(x, 4 * this.U)) x = p.x;
+        this.flora.push(new Plant({ kind, x, growth: 0.15, n: nb, lastMeal: 0 }));
+        c[kind] = (c[kind] || 0) + 1;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------ fungus
+  // A simple crowding-driven infection: it only spreads where creatures pack
+  // together, and gloomcaps rising from its victims seed more of it.
+  fungusTick(dt) {
+    const F = ECO.fungus;
+    // crowding is counted per layer: ground, air and water creatures don't
+    // breathe on each other
+    const dens = this._dens || (this._dens = [new Float32Array(NB), new Float32Array(NB), new Float32Array(NB)]);
+    const inf = this._infd || (this._infd = [new Float32Array(NB), new Float32Array(NB), new Float32Array(NB)]);
+    for (let l = 0; l < 3; l++) { dens[l].fill(0); inf[l].fill(0); }
+    for (const c of this.fauna) {
+      if (c.kind === 'mindbloom') continue;
+      const b = this.bucketOf(c.x), l = LAYER[c.kind];
+      dens[l][b]++;
+      if (c.inf) inf[l][b]++;
+    }
+    let outbreak = null;
+    for (const c of this.fauna) {
+      if (c.dead || c.inf || c.kind === 'mindbloom') continue;
+      const b = this.bucketOf(c.x), l = LAYER[c.kind];
+      let d = 0, i = 0, m = 0;
+      for (let k = b - 1; k <= b + 1; k++) { if (k < 0 || k >= NB) continue; d += dens[l][k]; i += inf[l][k]; if (l === 0) m += this.mush[k]; }
+      const crowd = Math.max(0, d - F.crowd);
+      if (!crowd) continue;
+      let rate = F.beta * (i + m * 2) * crowd + (d > F.crowd * 1.6 ? F.spont * crowd : 0);
+      if (RESIST[c.kind]) rate *= RESIST[c.kind]; // big bodies shrug most of it off
+      if (chance(rate, dt)) {
+        c.inf = 1;
+        c._infLife = rr(F.lifeMin, F.lifeMax);
+        outbreak = c;
+      }
+    }
+    if (outbreak && this.t - (this._lastOutbreakLog || -1e9) > 1800) {
+      this._lastOutbreakLog = this.t;
+      this.log(`${outbreak.name} the ${SPECIES[outbreak.kind].name.toLowerCase()} has caught the gloomcap fungus. Crowded creatures pass it to each other.`, 'fungus');
+    }
   }
 
   // ------------------------------------------------------------ genesis
@@ -262,23 +664,28 @@ export class World {
     const plant = (kind, x, growth) => {
       if (this.inPond(x, 3 * U)) return;
       const p = new Plant({ kind, x, growth, age: rr(0, 10) * HR });
-      if (kind === 'bulbstalk') p.ripe = r();
+      p.n = ECO.nPlant[kind] * growth;
+      if (kind === 'bulbstalk') { p.ripe = r() * 0.8; p.store = p.ripe * ECO.nFruit; }
+      if (kind === 'lanternlily') { p.store = ECO.nNectar; p.nectar = 1; }
       this.flora.push(p);
     };
     const kinds = ['fanfern', 'bulbstalk', 'lanternlily', 'fanfern', 'grass', 'puffcap', 'lanternlily', 'bulbstalk', 'grass', 'fanfern', 'grass', 'grass', 'bulbstalk', 'lanternlily', 'grass', 'puffcap', 'fanfern', 'grass'];
     kinds.forEach((k, i) => plant(k, (i + 0.5 + (r() - 0.5) * 0.8) / kinds.length * W, 0.6 + r() * 0.4));
-    for (let i = 0; i < 3; i++) this.spawn('scuttler', { age: rr(1, 4) * HR, origin: 'First settler' });
-    for (let i = 0; i < 3; i++) this.spawn('petalmoth', { age: rr(0.6, 2) * HR, origin: 'First settler' });
+    for (let i = 0; i < 3; i++) this.spawn('scuttler', { age: rr(1, 4) * HR, origin: 'First settler', energy: 0.8 });
+    for (let i = 0; i < 3; i++) this.spawn('petalmoth', { age: rr(0.6, 2) * HR, origin: 'First settler', energy: 0.8 });
+    // every species starts with a little dormant life in the soil
+    for (const k of ['scuttler', 'petalmoth']) for (let i = 0; i < 2; i++) this.bankAdd(k, CREATURES[k].randomGenome(r), ECO.nBody[k]);
     this.stats.created = Date.now();
+    this.stats.n0 = this.totalN();
+    this.stats.nIn = 0;
+    this.rebuildIndex();
     this.log('A new terrarium was sealed. Three scuttlers and three petalmoths were the first to stir.', 'milestone');
   }
 
   // ------------------------------------------------------------ the sim
-  ripples = [];
-
   update(dt) {
     this.t += dt;
-    this.simTime = Date.now();
+    this.simTime = this.now();
     // breathing gusts of air inside the glass
     this._gustT -= dt;
     if (this._gustT <= 0) { this._gustT = rr(20, 70); this._gustTarget = Math.random() < 0.4 ? rr(-1, 1) : 0; }
@@ -289,8 +696,14 @@ export class World {
     this._lifeAcc += dt;
     if (this._lifeAcc >= 1) { this.tick(this._lifeAcc); this._lifeAcc = 0; }
 
-    for (const c of this.fauna) c.move(this, dt);
+    for (const c of this.fauna) {
+      if (c.dead) continue;
+      c.move(this, dt);
+      // the fungus makes its hosts stagger
+      if (c.inf) c.x = clamp(c.x + Math.sin(this.t * 6 + c.phase) * this.U * 1.5 * dt, 2 * this.U, this.W - 2 * this.U);
+    }
     for (const e of this.eggs) e.move(this, dt);
+    for (const p of this.traps) if (p.snapT > 0) p.snapT -= dt;
     this.moveItems(dt);
     for (const v of this.visitors) v.update(this, dt);
     for (const r of this.ripples) r.t += dt;
@@ -298,8 +711,7 @@ export class World {
     this.particles.update(dt, this.t);
   }
 
-  // Every so often a slow drift of spores falls through the glass. It costs
-  // a handful of particles a second and quietly feeds the soil and the pond.
+  // A slow drift of spores sometimes falls through the glass (visual only).
   weather(dt) {
     if (this.offline) return;
     if (this._driftAt == null) this._driftAt = this.t + rr(8, 25) * 60;
@@ -309,7 +721,7 @@ export class World {
     }
     const d = this.drift;
     if (!d) return;
-    if (this.t > d.until) { this.drift = null; this._driftAt = this.t + rr(35, 90) * 60; for (let i = 0; i < 6; i++) this.addFert(rr(0, this.W), 0.04); return; }
+    if (this.t > d.until) { this.drift = null; this._driftAt = this.t + rr(35, 90) * 60; return; }
     const fade = Math.min(1, (d.until - this.t) / 20);
     if (Math.random() < dt * 5 * fade) {
       this.particles.emit({ type: 'mote', x: rr(0, this.W), y: -4, vx: rr(-4, 4) * this.U * 0.3, vy: rr(5, 9) * this.U * 0.4, drag: 0, wob: 10, life: rr(14, 22), size: rr(1.4, 2.6), color: P.cream, glow: d.col });
@@ -338,28 +750,62 @@ export class World {
   }
 
   tick(dt) {
+    this._tickN++;
     this.updateSky();
-    for (const p of this.flora) p.tick(this, dt);
-    for (const c of this.fauna) if (!c.dead) c.lifeTick(this, dt);
+    this.rebuildIndex();
+    for (const p of this.flora) if (!p.dead) p.tick(this, dt);
+    for (const c of this.fauna) {
+      if (c.dead) continue;
+      if (c.inf) {
+        c.inf += dt;
+        c.energy -= dt / (3 * HR);
+        if (c.inf > (c._infLife || 3 * HR)) { this.killFauna(c, 'fungus'); continue; }
+      }
+      c.lifeTick(this, dt);
+    }
     for (const e of this.eggs) if (!e.gone) e.tick(this, dt);
     for (const it of this.items) {
+      if (it.gone) continue;
       it.age += dt;
-      if (this.offline && !it.grounded) { it.grounded = true; it.y = this.inPond(it.x) ? this.pondBottom(it.x) - this.U : this.groundY(it.x) - this.U * 0.8; it.inWater = this.inPond(it.x); }
+      if (this.offline && !it.grounded) { it.grounded = true; it.inWater = this.inPond(it.x); it.y = it.inWater ? this.pondBottom(it.x) - this.U : this.groundY(it.x) - this.U * 0.8; }
       const rot = it.inWater ? 1.5 * HR : 4 * HR;
-      if (it.age > rot) { it.gone = true; this.addFert(it.x, 0.18 * it.food); }
+      if (it.age > rot) this.consumeItem(it, null);
     }
-    this.flora = this.flora.filter((p) => !p.dead);
-    this.fauna = this.fauna.filter((c) => !c.dead);
-    this.eggs = this.eggs.filter((e) => !e.gone);
-    this.items = this.items.filter((i) => !i.gone);
-    this.visitors = this.visitors.filter((v) => !v.done);
-
-    // soil slowly relaxes toward a middling fertility
-    for (let i = 0; i < SOIL_N; i++) this.soil[i] += (0.45 - this.soil[i]) * dt / (10 * HR);
-
+    this.huntTick(dt);
+    if (this._tickN % 5 === 0) this.fungusTick(dt * 5);
+    if (this._tickN % 30 === 0) {
+      const sdt = dt * 30;
+      this.diffuse(sdt);
+      this.bankTick(sdt);
+      this.immigrate(sdt);
+      this.arrivals();
+      this.trapSlowTick();
+    }
+    this.compact();
     this.sprout(dt);
-    this.immigrate(dt);
-    this.scheduleVisitors(dt);
+    this.scheduleVisitors();
+  }
+
+  // drop dead things in place, without allocating new arrays
+  compact() {
+    const keep = (arr, alive) => { let w = 0; for (let i = 0; i < arr.length; i++) if (alive(arr[i])) arr[w++] = arr[i]; arr.length = w; };
+    keep(this.flora, (p) => !p.dead);
+    keep(this.fauna, (c) => !c.dead);
+    keep(this.eggs, (e) => !e.gone);
+    keep(this.items, (i) => !i.gone);
+    keep(this.visitors, (v) => !v.done);
+  }
+
+  // nutrient slowly spreads sideways through the soil (conserving)
+  diffuse(dt) {
+    const s = this.soil;
+    const k = Math.min(0.2, dt / (6 * HR));
+    const tmp = this._tmp || (this._tmp = new Float64Array(SOIL_N));
+    for (let i = 0; i < SOIL_N; i++) {
+      const l = s[i > 0 ? i - 1 : i], r = s[i < SOIL_N - 1 ? i + 1 : i];
+      tmp[i] = s[i] + k * (l + r - 2 * s[i]);
+    }
+    s.set(tmp);
   }
 
   sprout(dt) {
@@ -367,7 +813,7 @@ export class World {
     const n = this.flora.length;
     if (n >= cap) return;
     let avg = 0; for (const s of this.soil) avg += s; avg /= SOIL_N;
-    const rate = (0.6 + avg) * (1 - n / cap) / 900 * (n < cap * 0.5 ? 3 : 1);
+    const rate = Math.min(1.2, 0.3 + avg) * (1 - n / cap) / 900 * (n < cap * 0.5 ? 3 : 1);
     if (!chance(rate, dt)) return;
     // sample a few spots, prefer fertile and uncrowded
     let best = null, bs = -1;
@@ -379,24 +825,65 @@ export class World {
       const s = this.fertAt(x) - crowd * 0.05;
       if (s > bs) { bs = s; best = x; }
     }
-    if (best == null) return;
+    if (best == null || this.fertAt(best) < 0.05) return;
     const kind = pickKind(sproutWeights(this));
-    this.flora.push(new Plant({ kind, x: best }));
-    this.addFert(best, -0.04);
+    const seedN = this.takeN(best, ECO.nPlant[kind] * 0.1);
+    this.flora.push(new Plant({ kind, x: best, n: seedN }));
     if (kind === 'coilspire' || kind === 'tubebloom') this.discover(kind);
   }
 
+  // outsiders only arrive when a species has been gone a long time and its
+  // seed bank is empty: the glass mostly rescues itself
   immigrate(dt) {
     for (const kind of FAUNA_KINDS) {
       if (!this.unlocked(kind)) continue;
-      if (this.count(kind) + this.countEggs(kind) > 0) continue;
-      if (!chance(1 / (kind === 'mindbloom' ? 3 * HR : 40 * 60), dt)) continue;
-      const c = this.spawn(kind, { age: CREATURES[kind].mature * rr(1, 2) });
-      this.log(`A lone ${SPECIES[kind].name.toLowerCase()} named ${c.name} found its way in from the flats.`, 'arrival');
+      if (this.count(kind) + this.countEggs(kind) > 0 || this.bank[kind]) continue;
+      const gone = this.stats.goneAt[kind] ?? (this.stats.goneAt[kind] = this.simTime);
+      const wait = kind === 'mindbloom' ? 86400 : ECO.immigrateAfter;
+      if (this.simTime - gone < wait * 1000) continue;
+      if (!chance(1 / HR, dt)) continue;
+      this.arrive(kind, `A lone ${SPECIES[kind].name.toLowerCase()} named {name} found its way in from the flats.`);
     }
   }
 
-  scheduleVisitors(dt) {
+  arrive(kind, msg) {
+    const g = CREATURES[kind].randomGenome(Math.random);
+    const n = this.nStruct(kind, g);
+    this.stats.nIn += n;
+    const c = this.spawn(kind, { genome: g, n, age: CREATURES[kind].mature * rr(1, 2), energy: 0.75 });
+    delete this.stats.goneAt[kind];
+    this.log(msg.replace('{name}', c.name), 'arrival');
+    return c;
+  }
+
+  // species unlocked before the predators existed arrive one at a time
+  arrivals() {
+    const q = this.stats.pendingArrivals;
+    if (!q?.length || this.simTime < (this.stats.nextArrival || 0)) return;
+    const kind = q.shift();
+    this.stats.nextArrival = this.simTime + rr(2, 4) * HR * 1000;
+    this.introduce(kind);
+  }
+
+  // put the first of a newly unlocked species into the glass
+  introduce(kind, x) {
+    const sp = SPECIES[kind];
+    if (sp.kind === 'flora') {
+      const U = this.U;
+      let px = x ?? rr(0.1, 0.9) * this.W;
+      if (kind === 'snaplure' && this.inPond(px, 5 * U)) px = this.pond.x0 - 10 * U;
+      if (kind === 'dewveil') px = rr(0.4, 0.75) * this.W;
+      const n = ECO.nPlant[kind];
+      this.stats.nIn += n;
+      this.flora.push(new Plant({ kind, x: px, growth: 0.5, n, lastMeal: 0 }));
+      this.discover(kind);
+      this.log(`A ${sp.name.toLowerCase()} has taken root in the glass.`, 'arrival');
+      return null;
+    }
+    return this.arrive(kind, `A ${sp.name.toLowerCase()} named {name} has slipped into the glass.`);
+  }
+
+  scheduleVisitors() {
     if (this.offline || !this.unlocked('gloamwhale')) return;
     if (!this.stats.nextWhale) this.stats.nextWhale = this.simTime + rr(4, 12) * 60000;
     if (this.simTime > this.stats.nextWhale && !this.visitors.length) {
@@ -407,27 +894,47 @@ export class World {
     }
   }
 
-  // Replay the sim while the app was closed. Coarse steps, no motion.
+  // Replay the sim while the app was closed. Coarse steps, no motion; the
+  // step grows with the gap so four days is still only ~2000 ticks.
   catchUp(seconds) {
     seconds = Math.min(seconds, 4 * 24 * HR);
     if (seconds < 5) return null;
-    const before = { births: this.stats.births, deaths: this.stats.deaths, logs: this.logs.length };
+    const before = { births: this.stats.births, deaths: this.stats.deaths, kills: this.act.kills };
     this.offline = true;
-    const end = Date.now();
+    const end = this.now();
     let t = end - seconds * 1000;
-    const step = seconds > 12 * HR ? 60 : 20;
+    const step = clamp(seconds / 2000, 20, 180);
     while (t < end) {
       const dt = Math.min(step, (end - t) / 1000);
       t += dt * 1000;
       this.simTime = t;
+      this.jitter(dt);
       this.tick(dt);
     }
     this.offline = false;
-    this.simTime = Date.now();
+    this.simTime = this.now();
     this.updateSky();
-    // drop anything now outside its valid region
-    for (const c of this.fauna) if (c.kind === 'scuttler' || c.kind === 'stiltstrider') { if (this.inPond(c.x, 4 * this.U)) c.x = this.pond.x0 - 8 * this.U; c.state = 'idle'; c.timer = 0; c.y = this.groundY(c.x); }
-    return { seconds, births: this.stats.births - before.births, deaths: this.stats.deaths - before.deaths };
+    this.rebuildIndex();
+    // put things back where they belong
+    for (const c of this.fauna) {
+      c.hunt = null; c.lured = null; c._doomed = null;
+      if (c.kind === 'scuttler' || c.kind === 'stiltstrider' || c.kind === 'hookjaw') { if (this.inPond(c.x, 4 * this.U)) c.x = this.pond.x0 - 8 * this.U; c.state = 'idle'; c.timer = 0; c.y = this.groundY(c.x); }
+    }
+    for (const p of this.traps) p.lured = null;
+    return { seconds, births: this.stats.births - before.births, deaths: this.stats.deaths - before.deaths, kills: this.act.kills - before.kills };
+  }
+
+  // offline, nothing moves, so creatures wander a little each step to keep
+  // crowding and hunting from freezing in place
+  jitter(dt) {
+    const k = Math.min(1, dt / 60) * 4 * this.U;
+    for (const c of this.fauna) {
+      if (c.kind === 'mindbloom') continue;
+      if (c.kind === 'ribbonfin' || c.kind === 'mireeel') { c.x = clamp(c.x + rr(-k, k), this.pond.x0 + 3 * this.U, this.pond.x1 - 3 * this.U); continue; }
+      let x = clamp(c.x + rr(-k, k), 3 * this.U, this.W - 3 * this.U);
+      if ((c.kind === 'scuttler' || c.kind === 'stiltstrider' || c.kind === 'hookjaw') && this.inPond(x, 4 * this.U)) x = c.x;
+      c.x = x;
+    }
   }
 
   // ------------------------------------------------------------ hit testing
@@ -441,42 +948,51 @@ export class World {
 
   // ------------------------------------------------------------ task rewards
   // A finished task becomes a creature. The task's words seed its genome,
-  // so the same words always grow the same colours.
+  // so the same words always grow the same colours. Your work is the one
+  // outside source of nutrient for the glass.
   bloomTask(task, x, y) {
     this.stats.tasksDone++;
     const done = this.stats.tasksDone;
     const newly = Object.keys(SPECIES).filter((k) => SPECIES[k].unlock === done);
-    const pool = FAUNA_KINDS.filter((k) => this.unlocked(k) && k !== 'mindbloom');
-    // favour newly unlocked species, then the least populated relative to cap
+    const pool = FAUNA_KINDS.filter((k) => this.unlocked(k) && k !== 'mindbloom' && !PREDATORS.includes(k));
     let kind = newly.find((k) => CREATURES[k] && k !== 'mindbloom');
     if (newly.includes('mindbloom')) kind = 'mindbloom';
     if (!kind) {
       let best = null, bs = -Infinity;
       for (const k of pool) {
-        const room = this.cap(k) - this.count(k) - this.countEggs(k);
-        const s = room / this.cap(k) + Math.random() * 0.35;
+        const room = this.ceil(k) - this.count(k) - this.countEggs(k);
+        const s = room / this.ceil(k) + Math.random() * 0.35;
         if (room > 0 && s > bs) { bs = s; best = k; }
       }
       kind = best;
     }
-    this.addFert(x, 0.35);
+    this.inject(x, 0.35);
     let creature = null;
     if (kind) {
       const r = mulberry32(hashStr(task.title.toLowerCase().trim() + kind));
       const genome = CREATURES[kind].randomGenome(r);
-      const o = { genome, origin: `Bloomed from “${task.title}”`, name: makeName(r), energy: 0.85, age: CREATURES[kind].mature * 0.25 };
+      const n = this.nStruct(kind, genome);
+      this.stats.nIn += n;
+      const o = { genome, n, origin: `Bloomed from “${task.title}”`, name: makeName(r), energy: 0.85, age: CREATURES[kind].mature * 0.25 };
       creature = this.spawn(kind, o);
-      if (kind === 'scuttler' || kind === 'stiltstrider') { creature.x = x; creature.y = this.groundY(x); if (this.inPond(x, 5 * this.U)) this.placeNew(creature); }
+      if (kind === 'scuttler' || kind === 'stiltstrider' || kind === 'hookjaw') { creature.x = x; creature.y = this.groundY(x); if (this.inPond(x, 5 * this.U)) this.placeNew(creature); }
       else if (kind === 'petalmoth' || kind === 'bellwisp') { creature.x = x; creature.y = y - 8 * this.U; }
       this.stats.births++;
+      this.act.births++;
       this.log(`“${task.title}” was finished and bloomed into ${creature.name}, a ${SPECIES[kind].name}.`, 'task');
     } else {
       // everything is at capacity: the soil takes the gift instead
-      for (let i = 0; i < 3; i++) this.flora.push(new Plant({ kind: pickKind(sproutWeights(this)), x: clamp(x + rr(-12, 12) * this.U, 0, this.W) }));
+      this.inject(x, 0.3);
+      for (let i = 0; i < 3; i++) {
+        const k = pickKind(sproutWeights(this));
+        const px = clamp(x + rr(-12, 12) * this.U, 0, this.W);
+        this.flora.push(new Plant({ kind: k, x: px, n: this.takeN(px, ECO.nPlant[k] * 0.1) }));
+      }
       this.log(`“${task.title}” was finished. The terrarium is full, so it fed the soil and three sprouts appeared.`, 'task');
     }
     for (const k of newly) {
       this.discover(k);
+      if (SPECIES[k].kind === 'flora' && (k === 'snaplure' || k === 'dewveil')) this.introduce(k, k === 'snaplure' ? x + 10 * this.U : undefined);
       this.log(`Something new has arrived: the ${SPECIES[k].name}.`, 'milestone');
       this.emit('unlock', k);
     }
@@ -485,35 +1001,71 @@ export class World {
 
   // ------------------------------------------------------------ persistence
   serialize() {
+    const r4 = (v) => Math.round(v * 1e4) / 1e4;
     return {
+      v: SAVE_V,
       seed: this.seed,
       W: this.W, H: this.H,
       flora: this.flora.map((p) => p.serialize(this)),
       fauna: this.fauna.map((c) => c.serialize(this)),
       eggs: this.eggs.map((e) => e.serialize(this)),
-      items: this.items.map((i) => ({ ...i, x: i.x / this.W, y: i.y / this.H })),
-      soil: this.soil.map((v) => Math.round(v * 1000) / 1000),
+      items: this.items.map((i) => ({ id: i.id, type: i.type, x: i.x / this.W, y: i.y / this.H, vy: 0, color: i.color, n: i.n, food: i.food, age: i.age, grounded: i.grounded, inWater: i.inWater })),
+      soil: Array.from(this.soil, r4),
+      bank: this.bank,
       stats: this.stats,
-      logs: this.logs.slice(-120),
+      logs: this.logs.slice(-140),
     };
   }
 
   restore(d) {
     this.seed = d.seed;
     const W = this.W, H = this.H;
-    this.flora = d.flora.map((o) => { bumpUid(o.id); return new Plant({ ...o, x: o.x * W }); });
+    const v = d.v ?? 1;
+    const lookup = {};
+    this.flora = d.flora.filter((o) => FLORA_KINDS.includes(o.kind)).map((o) => { bumpUid(o.id); return new Plant({ ...o, x: o.x * W }); });
     this.fauna = d.fauna.filter((o) => CREATURES[o.kind]).map((o) => {
       bumpUid(o.id);
-      const c = new CREATURES[o.kind]({ ...o, x: o.x * W, y: o.y * H, state: o.kind === 'petalmoth' ? 'fly' : 'idle', timer: 0 });
+      const c = new CREATURES[o.kind]({ ...o, x: o.x * W, y: o.y * H, state: o.kind === 'petalmoth' ? 'fly' : 'idle', timer: 0, hunt: null, lured: null });
+      lookup[c.id] = c;
       return c;
     });
     this.eggs = (d.eggs || []).map((o) => new Egg({ ...o, x: o.x * W, y: o.y * H }));
     this.items = (d.items || []).map((i) => ({ ...i, x: i.x * W, y: i.y * H }));
-    if (d.soil?.length === SOIL_N) this.soil = d.soil;
+    if (d.soil?.length === SOIL_N) this.soil = Float64Array.from(d.soil);
     this.stats = { ...this.stats, ...d.stats };
+    this.bank = d.bank || {};
     this.logs = d.logs || [];
-    // ground things follow the (possibly different) terrain
-    for (const c of this.fauna) if (c.kind === 'scuttler' || c.kind === 'stiltstrider') c.y = this.groundY(c.x);
+    if (v < 2) this.migrate1to2();
+    for (const c of this.fauna) if (c.kind === 'scuttler' || c.kind === 'stiltstrider' || c.kind === 'hookjaw') c.y = this.groundY(c.x);
+    // re-baseline the ledger: saving rounds the soil a little
+    this.stats.n0 = this.totalN() - (this.stats.nIn || 0);
+    this.rebuildIndex();
+  }
+
+  // Version 1 saves predate nutrient tracking, seed banks and predators.
+  migrate1to2() {
+    for (const p of this.flora) {
+      p.n = ECO.nPlant[p.kind] * p.growth;
+      if (p.kind === 'bulbstalk') p.store = (p.ripe || 0) * ECO.nFruit;
+      if (p.kind === 'lanternlily') p.store = (p.nectar ?? 1) * ECO.nNectar;
+    }
+    for (const c of this.fauna) {
+      c.n = this.nStruct(c.kind, c.genome) * 1.3;
+      c.genome.spd ??= 1;
+      c.genome.gl ??= c.genome.glow ? 0.5 : 0;
+      c.inf = 0;
+    }
+    for (const e of this.eggs) e.n = this.nStruct(e.species, e.genome);
+    for (const i of this.items) i.n = (i.food || 1) * ECO.nFruit;
+    for (const c of this.fauna) if (!this.bank[c.kind] || this.bank[c.kind].count < 2) this.bankAdd(c.kind, c.genome, this.nStruct(c.kind, c.genome) * 0.5);
+    this.stats.nIn = 0;
+    // unlocked species missing from an old glass come back soon, not in days
+    this.stats.goneAt = {};
+    for (const k of FAUNA_KINDS) if (this.unlocked(k) && !PREDATORS.includes(k) && !this.fauna.some((c) => c.kind === k)) this.stats.goneAt[k] = 0;
+    // anyone already past the carnivore thresholds meets them gradually
+    const due = [];
+    for (const k of ['snaplure', 'dewveil', 'hookjaw', 'lancewing', 'mireeel']) if (this.unlocked(k)) due.push(k);
+    this.stats.pendingArrivals = due;
+    this.stats.nextArrival = this.simTime + rr(0.5, 1.5) * HR * 1000;
   }
 }
-

@@ -22,8 +22,11 @@
 
   <!-- focus bar: visible while a task is being worked on -->
   <div id="focus-bar" class="chrome" hidden>
-    <span class="dot"></span>
-    <div class="focus-text"><span id="focus-title"></span><span id="focus-time"></span></div>
+    <span class="ring" aria-hidden="true">
+      <svg viewBox="0 0 36 36"><circle class="trk" cx="18" cy="18" r="15"/><circle id="focus-arc" class="arc" cx="18" cy="18" r="15" stroke-dasharray="94.25" stroke-dashoffset="94.25"/></svg>
+      <span class="dot"></span>
+    </span>
+    <div class="focus-text"><span id="focus-title"></span><span id="focus-time"><span id="focus-now">0:00</span><span class="of"> / <span id="focus-target">25:00</span></span></span></div>
     <button class="icon-btn" id="focus-pause" aria-label="Pause task"><svg viewBox="0 0 24 24"><path d="M8 6v12M16 6v12"/></svg></button>
     <button class="icon-btn accent" id="focus-done" aria-label="Finish task"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>
   </div>

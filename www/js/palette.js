@@ -70,3 +70,14 @@ export function skyAt(hour) {
   out.night = a.night + (b.night - a.night) * t;
   return out;
 }
+
+// Just the darkness level, without building any colour strings. The offline
+// catch-up calls this thousands of times.
+export function nightAt(hour) {
+  hour = ((hour % 24) + 24) % 24;
+  let i = 0;
+  while (i < KEYS.length - 2 && KEYS[i + 1].h <= hour) i++;
+  const a = KEYS[i], b = KEYS[i + 1];
+  const t = clamp((hour - a.h) / (b.h - a.h), 0, 1);
+  return a.night + (b.night - a.night) * t;
+}

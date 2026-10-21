@@ -5,7 +5,34 @@
 import { P, FAMILIES } from './palette.js';
 import { TAU, clamp, hashStr, mulberry32, pick, uid, drawGlow, smooth, mixHex } from './util.js';
 
-const FOCUS_FULL = 50 * 60 * 1000; // a sprout reaches full height after 50 focused minutes
+// A sprout reaches full height exactly when its focus target is met.
+export const TARGETS = [15, 25, 45, 60, 90]; // minutes
+const DEFAULT_TARGET = 25;
+const LEGACY_TARGET = 50; // tasks saved before targets existed grew over 50 minutes
+const LAST_TARGET_KEY = 'glasswild.lastTarget';
+
+function loadLastTarget() {
+  try {
+    const v = parseInt(localStorage.getItem(LAST_TARGET_KEY), 10);
+    if (TARGETS.includes(v)) return v;
+  } catch {}
+  return DEFAULT_TARGET;
+}
+function saveLastTarget(v) { try { localStorage.setItem(LAST_TARGET_KEY, String(v)); } catch {} }
+
+// runtime caches live on underscored keys; never write them to the save
+function stripPrivate(t) {
+  const o = {};
+  for (const k in t) if (k[0] !== '_') o[k] = t[k];
+  return o;
+}
+
+// scratch state reused by draw/drawLabels so a repaint allocates nothing
+const _pos = { x: 0, y: 0 };
+const _labels = []; // pool of { t, x, y }
+let _labelN = 0;
+const byX = (a, b) => a.x - b.x;
+let _fontPx = -1, _fontFam = '', _fontStr = '';
 
 export const dayKey = (t = Date.now()) => { const d = new Date(t); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
 
@@ -14,24 +41,69 @@ export class TaskGarden {
     this.world = world;
     this.tasks = data?.tasks || [];
     this.history = data?.history || [];
+    for (const t of this.tasks) {
+      if (!(t.targetMin > 0)) {
+        t.targetMin = LEGACY_TARGET;
+        t.chimed = this.elapsed(t) >= this.targetMs(t);
+      } else if (t.chimed == null) t.chimed = this.elapsed(t) >= this.targetMs(t);
+    }
+    this._fp = null; // reused world.focusPod object
     this.anim = new Map(); // id -> bloom animation start (world.t)
     this.listeners = [];
   }
   onChange(fn) { this.listeners.push(fn); }
   changed() { for (const fn of this.listeners) fn(); }
 
-  serialize() { return { tasks: this.tasks, history: this.history.slice(-300) }; }
+  serialize() { return { tasks: this.tasks.map(stripPrivate), history: this.history.slice(-300) }; }
 
   colorsFor(title) {
     const r = mulberry32(hashStr(title.toLowerCase()));
     return { c1: pick([...FAMILIES.warm, ...FAMILIES.dusk], r), c2: pick([...FAMILIES.cool, P.cream, P.bone], r), glow: pick(FAMILIES.glow, r) };
   }
 
-  get active() { return this.tasks.find((t) => t.state === 'active') || null; }
+  get active() {
+    for (const t of this.tasks) if (t.state === 'active') return t;
+    return null;
+  }
   get pending() { return this.tasks.filter((t) => t.state !== 'done'); }
   get doneToday() { const k = dayKey(); return this.tasks.filter((t) => t.state === 'done' && dayKey(t.completedAt) === k); }
 
   elapsed(t) { return (t.focusMs || 0) + (t.state === 'active' && t.startedAt ? Date.now() - t.startedAt : 0); }
+  targetMs(t) { return (t.targetMin || DEFAULT_TARGET) * 60000; }
+  // 0..1 progress toward the focus target (not eased; grow() eases it)
+  progress(t) { return clamp(this.elapsed(t) / this.targetMs(t), 0, 1); }
+  get lastTarget() { return loadLastTarget(); }
+
+  setTarget(id, min) {
+    const t = this.tasks.find((x) => x.id === id);
+    if (!t || !(min > 0)) return;
+    t.targetMin = min;
+    // only chime for targets still ahead; lowering below elapsed is silent
+    t.chimed = this.elapsed(t) >= this.targetMs(t);
+    saveLastTarget(min);
+    this.changed();
+  }
+
+  // the next choice after the current target (wraps; legacy 50 -> 60)
+  cycleTarget(id) {
+    const t = this.tasks.find((x) => x.id === id);
+    if (!t) return;
+    const next = TARGETS.find((m) => m > t.targetMin) ?? TARGETS[0];
+    this.setTarget(id, next);
+    return next;
+  }
+
+  // called once a second by the app: publishes the active sprout tip to the
+  // world (reusing one object) so creatures can be drawn to it
+  tick() {
+    const w = this.world;
+    const t = this.active;
+    if (!t) { w.focusPod = null; return; }
+    const fp = (this._fp ||= { x: 0, y: 0 });
+    this.podPos(t, fp);
+    fp.y -= (3 + 9 * this.grow(t)) * w.U;
+    w.focusPod = fp;
+  }
 
   freeSlot() {
     const used = new Set(this.tasks.map((t) => t.slot));
@@ -43,10 +115,10 @@ export class TaskGarden {
   add(title) {
     title = title.trim().slice(0, 120);
     if (!title) return null;
-    const t = { id: uid(), title, created: Date.now(), state: 'seed', focusMs: 0, startedAt: null, completedAt: null, slot: this.freeSlot(), ...this.colorsFor(title) };
+    const t = { id: uid(), title, created: Date.now(), state: 'seed', focusMs: 0, startedAt: null, completedAt: null, targetMin: loadLastTarget(), chimed: false, slot: this.freeSlot(), ...this.colorsFor(title) };
     this.tasks.push(t);
     const p = this.podPos(t);
-    this.world.addFert(p.x, 0.03);
+    this.world.inject(p.x, 0.03);
     this.world.particles.burst(p.x, p.y, 8, { type: 'spark', color: this.world.sky.ground, speed: 8 * this.world.U, life: 0.8, g: 30 * this.world.U });
     this.world.log(`A seed was planted: “${title}”.`, 'task');
     this.changed();
@@ -62,6 +134,7 @@ export class TaskGarden {
     t.startedAt = Date.now();
     const p = this.podPos(t);
     this.world.particles.emit({ type: 'ring', x: p.x, y: p.y, size: this.world.U, grow: 12 * this.world.U, life: 1.3, color: t.glow });
+    this.tick();
     this.changed();
   }
 
@@ -71,7 +144,7 @@ export class TaskGarden {
     t.focusMs = this.elapsed(t);
     t.startedAt = null;
     t.state = 'seed';
-    if (!silent) this.changed();
+    if (!silent) { this.tick(); this.changed(); }
   }
 
   complete(id) {
@@ -89,7 +162,8 @@ export class TaskGarden {
     w.particles.emit({ type: 'ring', x: p.x, y: p.y - 8 * U, size: U, grow: 18 * U, life: 1.4, color: t.c1 });
     const res = w.bloomTask(t, p.x, p.y - 8 * U);
     t.creature = res.creature ? { id: res.creature.id, name: res.creature.name, kind: res.creature.kind } : null;
-    this.history.push({ title: t.title, at: t.completedAt, focusMs: t.focusMs, creature: t.creature });
+    this.history.push({ title: t.title, at: t.completedAt, focusMs: t.focusMs, targetMin: t.targetMin, creature: t.creature });
+    this.tick();
     this.changed();
     return { task: t, ...res };
   }
@@ -99,10 +173,11 @@ export class TaskGarden {
     if (i < 0) return;
     const t = this.tasks[i];
     const p = this.podPos(t);
-    this.world.addFert(p.x, 0.08);
+    this.world.inject(p.x, 0.08);
     this.world.particles.burst(p.x, p.y, 10, { type: 'spark', color: P.ochre, speed: 8 * this.world.U, life: 1, g: 30 * this.world.U });
     if (t.state !== 'done') this.world.log(`“${t.title}” was composted. The soil is a little richer for it.`, 'task');
     this.tasks.splice(i, 1);
+    this.tick();
     this.changed();
   }
 
@@ -116,7 +191,7 @@ export class TaskGarden {
     const k = dayKey();
     const old = this.tasks.filter((t) => t.state === 'done' && dayKey(t.completedAt) !== k);
     if (!old.length) return 0;
-    for (const t of old) { const p = this.podPos(t); this.world.addFert(p.x, 0.12); }
+    for (const t of old) { const p = this.podPos(t, _pos); this.world.inject(p.x, 0.12); }
     this.tasks = this.tasks.filter((t) => !old.includes(t));
     this.world.log(`Yesterday's ${old.length === 1 ? 'bloom' : old.length + ' blooms'} composted into the soil overnight.`, 'milestone');
     this.changed();
@@ -145,16 +220,18 @@ export class TaskGarden {
     return order;
   }
 
-  podPos(t) {
+  // pass `out` to fill an existing object instead of allocating one
+  podPos(t, out = { x: 0, y: 0 }) {
     const s = this.slots();
     const x = s[t.slot % s.length] + Math.floor(t.slot / s.length) * 2.5 * this.world.U;
-    return { x, y: this.world.groundY(x) };
+    out.x = x; out.y = this.world.groundY(x);
+    return out;
   }
 
   hit(x, y) {
     const U = this.world.U;
     for (const t of this.tasks) {
-      const p = this.podPos(t);
+      const p = this.podPos(t, _pos);
       const top = t.state === 'done' ? 13 * U : t.state === 'active' ? 12 * U : 5 * U;
       if (x > p.x - 4 * U && x < p.x + 4 * U && y < p.y + 3 * U && y > p.y - top) return t;
     }
@@ -162,10 +239,11 @@ export class TaskGarden {
   }
 
   // ------------------------------------------------------------ drawing
+  // pure drawing: world.focusPod is published by tick(), not here
   draw(ctx, amb, labelAlpha, font) {
-    const w = this.world, U = w.U;
+    const U = this.world.U;
     for (const t of this.tasks) {
-      const p = this.podPos(t);
+      const p = this.podPos(t, _pos);
       ctx.save();
       ctx.translate(p.x, p.y);
       ctx.scale(U * 1.25, U * 1.25);
@@ -175,27 +253,44 @@ export class TaskGarden {
       ctx.restore();
     }
     if (labelAlpha > 0) this.drawLabels(ctx, amb, font, labelAlpha);
-    if (this.active) {
-      const t = this.active;
-      w.focusPod = { ...this.podPos(t) };
-      w.focusPod.y -= (3 + 9 * this.grow(t)) * U;
-    } else w.focusPod = null;
   }
 
   // labels sit on staggered rows above the soil with a thin leader down to
   // their pod, so neighbouring seeds never print over each other
   drawLabels(ctx, amb, font, alpha = 1) {
+    if (alpha <= 0.02) return;
     const w = this.world, U = w.U;
-    const pods = this.tasks.filter((t) => t.state !== 'done').map((t) => ({ t, p: this.podPos(t) })).sort((a, b) => a.p.x - b.p.x);
-    if (!pods.length || alpha <= 0.02) return;
-    ctx.font = `500 ${Math.max(10, U * 2.4)}px ${font}`;
+    // gather pending pods into the reused pool, sorted by x
+    _labelN = 0;
+    for (const t of this.tasks) {
+      if (t.state === 'done') continue;
+      const e = _labels[_labelN] || (_labels[_labelN] = { t: null, x: 0, y: 0 });
+      this.podPos(t, e);
+      e.t = t;
+      _labelN++;
+    }
+    if (!_labelN) return;
+    _labels.length = _labelN; // pool shrinks only when tasks leave
+    const pods = _labels;
+    pods.sort(byX);
+    const fs = Math.max(10, U * 2.4);
+    if (fs !== _fontPx || font !== _fontFam) { _fontPx = fs; _fontFam = font; _fontStr = `500 ${fs}px ${font}`; }
+    ctx.font = _fontStr;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const rowEnd = [];
+    const rowEnd = this._rowEnd || (this._rowEnd = []);
+    rowEnd.length = 0;
     const top = w.groundBase - 19 * U;
-    for (const { t, p } of pods) {
-      const label = t.title.length > 14 ? t.title.slice(0, 13) + '…' : t.title;
-      const half = ctx.measureText(label).width / 2 + U * 1.2;
+    for (let i = 0; i < _labelN; i++) {
+      const p = pods[i], t = p.t;
+      // label text and its width are cached per title and font
+      if (t._lwT !== t.title || t._lwF !== _fontStr) {
+        t._lwT = t.title; t._lwF = _fontStr;
+        t._lbl = t.title.length > 14 ? t.title.slice(0, 13) + '…' : t.title;
+        t._lw = ctx.measureText(t._lbl).width;
+      }
+      const label = t._lbl;
+      const half = t._lw / 2 + U * 1.2;
       const x = Math.min(Math.max(p.x, half + U), w.W - half - U);
       let row = 0;
       while (rowEnd[row] != null && rowEnd[row] > x - half) row++;
@@ -212,9 +307,10 @@ export class TaskGarden {
       ctx.fillText(label, x, y + 0.5);
     }
     ctx.textBaseline = 'alphabetic';
+    for (let i = 0; i < _labelN; i++) pods[i].t = null; // don't pin removed tasks
   }
 
-  grow(t) { return smooth(clamp(this.elapsed(t) / FOCUS_FULL, 0, 1)); }
+  grow(t) { return smooth(this.progress(t)); }
 
   drawPod(ctx, amb, t) {
     const w = this.world;
@@ -299,7 +395,7 @@ export class TaskGarden {
   drawGlow(ctx) {
     const w = this.world, U = w.U;
     for (const t of this.tasks) {
-      const p = this.podPos(t);
+      const p = this.podPos(t, _pos);
       if (t.state === 'active') {
         const g = this.grow(t);
         drawGlow(ctx, t.glow, p.x, p.y - (3 + 9 * g) * U, (5 + g * 4) * U, 0.35 + w.night * 0.4 + Math.sin(w.t * 2.4) * 0.1);

@@ -76,12 +76,22 @@ body.idle #focus-bar { opacity: 0.55; pointer-events: auto; }
   background: rgba(24, 21, 38, 0.7); border: 1px solid var(--panel-line); border-radius: 22px;
 }
 #focus-bar[hidden] { display: none; }
+#focus-bar { padding-left: 8px; }
+#focus-bar .ring { position: relative; width: 32px; height: 32px; flex: none; display: grid; place-items: center; }
+#focus-bar .ring svg { position: absolute; inset: 0; width: 32px; height: 32px; transform: rotate(-90deg); stroke-width: 2.6; }
+#focus-bar .ring .trk { stroke: rgba(239, 228, 204, 0.14); }
+#focus-bar .ring .arc { stroke: var(--sea); transition: stroke-dashoffset 1s linear, stroke 0.6s ease; }
 #focus-bar .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 10px var(--amber); animation: breathe 2.4s ease-in-out infinite; flex: none; }
 .focus-text { display: flex; flex-direction: column; min-width: 0; }
 #focus-title { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 48vw; }
-#focus-time { font-size: 12px; color: var(--amber); font-variant-numeric: tabular-nums; }
+#focus-time { font-size: 12px; color: var(--mint); font-variant-numeric: tabular-nums; }
+#focus-time .of { color: var(--muted); }
+#focus-bar.ripe { border-color: rgba(255, 201, 107, 0.45); box-shadow: 0 0 18px rgba(255, 201, 107, 0.18); }
+#focus-bar.ripe .ring .arc { stroke: var(--amber); filter: drop-shadow(0 0 3px rgba(255, 201, 107, 0.8)); }
+#focus-bar.ripe #focus-time { color: var(--amber); text-shadow: 0 0 8px rgba(255, 201, 107, 0.45); }
+#focus-bar.ripe #focus-time .of { color: rgba(255, 201, 107, 0.6); }
 @keyframes breathe { 50% { opacity: 0.45; transform: scale(0.8); } }
-@media (prefers-reduced-motion: reduce) { #focus-bar .dot { animation: none; } }
+@media (prefers-reduced-motion: reduce) { #focus-bar .dot { animation: none; } #focus-bar .ring .arc { transition: none; } }
 
 .icon-btn {
   width: 40px; height: 40px; flex: none; border-radius: 50%; border: 0;
@@ -147,7 +157,24 @@ body.idle #focus-bar { opacity: 0.55; pointer-events: auto; }
 .task-list .t { flex: 1; min-width: 0; }
 .task-list .t b { display: block; font-weight: 500; font-size: 15px; overflow-wrap: anywhere; }
 .task-list .t span { font-size: 12px; color: var(--muted); }
-.task-list li.active .t span { color: var(--amber); }
+.task-list .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 2px; }
+.task-list .meta span { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.task-list li.active .t span { color: var(--mint); }
+.task-list li.ripe .t span { color: var(--amber); }
+.chip {
+  flex: none; height: 22px; padding: 0 8px; border-radius: 11px; cursor: pointer;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; font-variant-numeric: tabular-nums;
+  color: var(--cream); background: rgba(239, 228, 204, 0.08); border: 1px solid var(--panel-line);
+  position: relative;
+}
+.chip::before { content: ""; position: absolute; inset: -11px -4px; } /* bigger tap target */
+.chip:active { background: rgba(239, 228, 204, 0.2); }
+.task-list li.active .chip { border-color: rgba(111, 183, 168, 0.5); color: var(--mint); }
+.task-list li.ripe .chip { border-color: rgba(255, 201, 107, 0.5); color: var(--amber); }
+.task-list .prog { display: block; height: 3px; margin-top: 6px; border-radius: 2px; background: rgba(239, 228, 204, 0.1); overflow: hidden; }
+.task-list .prog i { display: block; height: 100%; border-radius: 2px; background: var(--sea); transition: width 1s linear; }
+.task-list li:not(.active) .prog i { background: rgba(111, 183, 168, 0.5); }
+.task-list li.ripe .prog i { background: var(--amber); box-shadow: 0 0 6px rgba(255, 201, 107, 0.7); }
 .task-list .acts { display: flex; gap: 6px; flex: none; }
 .task-list .acts .icon-btn { width: 36px; height: 36px; }
 .task-list .acts .del.armed { background: var(--coral); color: var(--ink); }
@@ -256,3 +283,6 @@ body.idle #inspector { opacity: 1; pointer-events: auto; }
   #dock { left: auto; right: calc(12px + var(--sar)); transform: none; flex-direction: column; bottom: calc(10px + var(--sab)); }
   #focus-bar { left: calc(12px + var(--sal)); transform: none; bottom: calc(10px + var(--sab)); }
 }
+.log .k-hunt { color: var(--salmon); }
+.log .k-fungus { color: #c9d98a; }
+.log .k-arrival { color: var(--sea); }

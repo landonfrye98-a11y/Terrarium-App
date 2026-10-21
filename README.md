@@ -25,6 +25,27 @@ It gets its own icon, runs fullscreen, works offline, and updates itself wheneve
 | 🦒 | Stiltstrider | 4 tasks | Cup-headed grazers on stilt legs. They sleep folded up at night and lay speckled eggs. |
 | 👁 | Mindbloom | 8 tasks | Hangs from the glass and pulses. Nearby creatures stop and stare. It glows brighter while you focus. |
 | 🐋 | Gloamwhale | 12 tasks | A huge shape that sometimes drifts across the far sky. |
+| 🪤 | Snaplure, Dewveil | 15 tasks | Carnivorous plants. A glowing trap that lures petalmoths, and a sticky curtain on the ceiling that catches bellwisps. |
+| 🦂 | Hookjaw | 20 tasks | A ground stalker. It picks off the weakest scuttlers and raids strider eggs. Burrowed scuttlers are safe from it. |
+| 🗡 | Lancewing, Mire-eel | 25 tasks | An aerial diver that hunts petalmoths, and a pond ambusher that eats ribbonfin roe and fry. |
+
+## A self-sufficient ecosystem
+
+Nothing in the glass is created from nothing.
+- **A fixed pool of nutrient** cycles from soil to plants, to grazers, to predators, to carcasses, to scuttlers, and back to the soil. Finished tasks are the only outside input: your work feeds the glass.
+- **Breeding depends on food.** A creature needs enough nutrient in its body to build a child, so a crowded glass starves itself back down and a sparse one recovers. Hard limits remain only as a drawing budget for the phone.
+- **Predators keep populations in check.** They need time to digest after a kill. They stop hunting when their prey gets scarce, and they prefer the young, the old and the sick. Their numbers rise and fall with their prey's.
+- **The gloomcap fungus** spreads where creatures crowd together. Its victims stagger, die, and sprout pale mushrooms that seed more of it.
+- **Seed banks** hold dormant eggs and spores in the soil. They bring a species back when it dwindles. Outsiders only arrive if a species has been gone for days.
+- **Traits matter.** Speed costs energy. Glowing helps a creature breed but shows it to predators at night. Colours that match the background help it hide. Over days, lineages adapt.
+
+`npm test` runs `tools/sim.mjs`, which plays seeded terrariums forward for days and checks the invariants:
+- nutrient is conserved;
+- there are no NaNs;
+- the census matches a recount;
+- populations stay within the performance ceilings;
+- extinctions get rescued;
+- a 4-day catch-up stays fast.
 
 Plants follow the same rules. Fanferns, bulbstalks, lantern lilies and puffcaps grow from fertile soil, feed the animals, wither, and rot back into the ground. Tubeblooms appear after 6 finished tasks and coilspires after 10.
 
@@ -49,6 +70,16 @@ Plants follow the same rules. Fanferns, bulbstalks, lantern lilies and puffcaps 
 ```sh
 npm run serve          # http://localhost:8080 — no build step, plain ES modules in www/
 ```
+
+**Focus timer:** each task has a target (15–90 minutes). Its sprout reaches full bloom exactly at the target, and the app chimes and vibrates when you get there.
+
+**Music (optional):** a generative score driven by the ecosystem:
+- each species has its own voice;
+- the key and chords follow the time of day;
+- a hunt brings a tense chord that resolves after the kill;
+- during focus it drops to a calm bed.
+
+It uses one fixed pool of synth voices and suspends itself when hidden or idle.
 
 Debug URL parameters: `?fresh` (ignore the save), `?hour=20` (force the sky), `?done=12` (pretend 12 tasks are finished), `?warp=60` (speed up time), `?perf=saver`, `?fps` (log frame rate).
 
