@@ -223,13 +223,17 @@ function scuttlerDraw(ctx, c, world, amb) {
 
   if (under) {
     // tunnel behind, pocket around the body
-    ctx.fillStyle = amb.c(pl.tunnel, 0.28);
+    // the pocket it's digging, plus a short tapering trace of loose soil
+    // behind it (a long dark band read as a shadow)
+    ctx.fillStyle = amb.c(pl.tunnel, 0.22);
     ctx.beginPath();
-    ctx.moveTo(-3.5, -3.2);
-    ctx.quadraticCurveTo(-9, -3.6, -14, -2.6);
-    ctx.lineTo(-14, -0.6);
-    ctx.quadraticCurveTo(-9, -0.2, -3.5, -0.3);
     oval(ctx, 0.2, -2.0, 5.0, 2.9, 0);
+    ctx.fill();
+    ctx.fillStyle = amb.c(pl.tunnel, 0.1);
+    ctx.beginPath();
+    ctx.moveTo(-3.8, -3.0);
+    ctx.quadraticCurveTo(-6, -2.6, -7.5, -1.7);
+    ctx.quadraticCurveTo(-6, -0.9, -3.8, -0.7);
     ctx.fill();
     ctx.strokeStyle = amb.c(pl.tunnelRim, 0.35);
     ctx.lineWidth = 0.18;
@@ -263,13 +267,24 @@ function scuttlerDraw(ctx, c, world, amb) {
   }
   ctx.stroke();
 
-  // rear telson plates
-  ctx.fillStyle = amb.c(pl.shellDk, A);
+  // rear tail plates: two small overlapping segments tucked under the dome,
+  // in shell colour so they read as body, not shadow
+  for (let k = 1; k >= 0; k--) {
+    const x0 = SC_X0 + 0.35 - k * 0.42, w = 0.75 - k * 0.15, h = 1.05 - k * 0.3;
+    const yb = R - 0.15 + k * 0.05;
+    ctx.fillStyle = amb.c(k ? pl.seam : pl.shell, A);
+    ctx.beginPath();
+    ctx.moveTo(x0 + 0.2, yb - h);
+    ctx.quadraticCurveTo(x0 - w, yb - h * 0.85, x0 - w * 0.95, yb);
+    ctx.quadraticCurveTo(x0 - w * 0.3, yb + 0.12, x0 + 0.3, yb);
+    ctx.fill();
+  }
+  ctx.strokeStyle = amb.c(pl.shellLt, 0.7 * A);
+  ctx.lineWidth = 0.12;
   ctx.beginPath();
-  ctx.moveTo(SC_X0 + 0.3, R - 1.4);
-  ctx.quadraticCurveTo(SC_X0 - 0.9, R - 1.2, SC_X0 - 1.0, R - 0.2);
-  ctx.quadraticCurveTo(SC_X0 - 0.3, R - 0.45, SC_X0 + 0.4, R - 0.3);
-  ctx.fill();
+  ctx.moveTo(SC_X0 + 0.45, R - 1.15);
+  ctx.quadraticCurveTo(SC_X0 - 0.35, R - 1.0, SC_X0 - 0.4, R - 0.35);
+  ctx.stroke();
 
   // carapace dome
   ctx.fillStyle = amb.c(pl.shell, A);
