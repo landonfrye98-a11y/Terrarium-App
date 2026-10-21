@@ -20,6 +20,7 @@ const NB = 16; // spatial buckets across the glass
 const HR = 3600;
 const SAVE_V = 2;
 const MAX_FAUNA = 36; // drawing budget for the whole glass
+const ORDER_COOLDOWN = 20 * 60 * 1000; // between hunts you command
 const RESIST = { stiltstrider: 0.2, hookjaw: 0.2, mireeel: 0.3, lancewing: 0.3 };
 const LAYER = { scuttler: 0, stiltstrider: 0, hookjaw: 0, petalmoth: 1, bellwisp: 1, lancewing: 1, mindbloom: 1, ribbonfin: 2, mireeel: 2 };
 
@@ -58,6 +59,7 @@ export class World {
     this.act = { births: 0, deaths: 0, pollinations: 0, hunts: 0, kills: 0, pulses: 0, splashes: 0, hatches: 0 };
     this.hunting = 0;
     this.traps = [];
+    this.fx = []; // short-lived kill animations (live only)
     this.updateSky();
   }
 
@@ -482,7 +484,7 @@ export class World {
     this.hunting = 0;
     for (const c of this.fauna) {
       if (c.dead || !PREDATORS.includes(c.kind)) continue;
-      if (c.digest > 0) { c.digest -= dt; continue; }
+      if (c.digest > 0 && !c.hunt) { c.digest -= dt; continue; }
       if (c.hunt) {
         this.hunting++;
         const prey = c.hunt.prey;
@@ -542,11 +544,75 @@ export class World {
     if (prey.species) { this.eatEgg(prey, pred); this.log(`${pred.name} ate a ${SPECIES[prey.species].name.toLowerCase()} egg.`, 'hunt'); return; }
     this.feed(pred, prey.n || 0, prey.x);
     prey.n = 0;
+    this.killFx(pred, prey);
     this.log(`${pred.name} the ${SPECIES[pred.kind].name.toLowerCase()} caught ${prey.name} the ${SPECIES[prey.kind].name.toLowerCase()}.`, 'hunt');
     this.killFauna(prey, 'eaten');
     if (!this.offline) this.particles.burst(prey.x, prey.y, 8, { type: 'spark', color: prey.genome.c1, speed: 8 * this.U, life: 0.9, g: 20 * this.U });
     pred.onKill?.(this, prey);
   }
+  // a kill animation: the drawing code plays it for about a second
+  killFx(pred, prey) {
+    if (this.offline) return;
+    const U = this.U;
+    let mx = pred.x, my = pred.y;
+    if (pred.kind === 'hookjaw') { mx = pred.x + pred.dir * 6 * U * pred.scale; my = pred.y - 2.5 * U * pred.scale; }
+    else if (pred.kind === 'snaplure' || pred.kind === 'dewveil') { const t = pred.tip(this); mx = t.x; my = t.y; }
+    else if (pred.kind === 'mireeel') { mx = pred.x + pred.dir * 4 * U * pred.scale; }
+    if (this.fx.length >= 4) this.fx.shift();
+    this.fx.push({ t0: this.t, x: prey.x, y: prey.y, mx, my, prey, color: prey.genome.c1, glow: prey.genome.glow || prey.genome.eye || P.glowAmber, dir: pred.dir || 1 });
+    // fragments: wing petals flutter, shells crumble
+    const flutter = prey.kind === 'petalmoth' || prey.kind === 'bellwisp';
+    for (let i = 0; i < 10; i++) {
+      this.particles.emit({ type: 'mote', x: prey.x + rr(-2, 2) * U, y: prey.y + rr(-2, 1) * U, vx: rr(-10, 10) * U * 0.4, vy: flutter ? rr(-6, 2) * U * 0.4 : -rr(4, 10) * U * 0.4, g: flutter ? 6 * U : 30 * U, drag: flutter ? 1.8 : 0.6, wob: flutter ? 14 : 0, life: flutter ? rr(2.5, 4) : rr(0.8, 1.4), size: rr(1.6, 3.2), color: i % 3 ? prey.genome.c1 : prey.genome.c2 });
+    }
+    this.particles.emit({ type: 'ring', x: prey.x, y: prey.y, size: U, grow: 14 * U, life: 0.7, drag: 0, color: P.cream });
+  }
+
+  // ---- commanded hunts: you can point a predator at the glass, but only
+  // every so often, and the usual refuges still protect dwindling prey
+  orderWait() { return Math.max(0, (this.stats.orderReadyAt || 0) - this.simTime); }
+  orderStatus(pred) {
+    if (!pred || pred.dead) return { ok: false, why: 'gone' };
+    if (pred.hunt || pred.lured || (pred.snapT > 0)) return { ok: false, why: 'busy' };
+    if ((pred.kind === 'snaplure' || pred.kind === 'dewveil') && (pred.growth < 0.8 || pred.wither > 0)) return { ok: false, why: 'young' };
+    if (PREDATORS.includes(pred.kind) && !pred.adult) return { ok: false, why: 'young' };
+    const wait = this.orderWait();
+    if (wait > 0) return { ok: false, why: 'cooldown', wait };
+    if (!this.orderPrey(pred)) return { ok: false, why: 'noprey' };
+    return { ok: true };
+  }
+  orderPrey(pred) {
+    if (pred.findPrey) return pred.findPrey(this);
+    const preyKind = pred.kind === 'snaplure' ? 'petalmoth' : 'bellwisp';
+    if (this.count(preyKind) <= ECO.hunt[pred.kind].refuge) return null;
+    let prey = null, bd = Infinity;
+    for (const c of this.fauna) {
+      if (c.kind !== preyKind || c.dead || c.lured || c._doomed) continue;
+      const d = Math.abs(c.x - pred.x);
+      if (d < bd) { bd = d; prey = c; }
+    }
+    return prey;
+  }
+  orderHunt(pred) {
+    const st = this.orderStatus(pred);
+    if (!st.ok) return st;
+    const prey = this.orderPrey(pred);
+    this.stats.orderReadyAt = this.simTime + ORDER_COOLDOWN;
+    this.act.hunts++;
+    if (pred.findPrey) {
+      pred.digest = 0;
+      pred.hunt = { prey, until: this.t + 25, ordered: true };
+      if (!prey.species) prey._doomed = pred.id;
+      this.log(`You sent ${pred.name} the ${SPECIES[pred.kind].name.toLowerCase()} to hunt.`, 'hunt');
+    } else {
+      pred.digest = 0; pred.closed = 0; pred.caught = 0;
+      pred.lured = prey; pred.lureUntil = this.t + 30;
+      prey.lured = pred;
+      this.log(`You coaxed a ${SPECIES[pred.kind].name.toLowerCase()} into luring ${prey.name}.`, 'hunt');
+    }
+    return { ok: true, prey };
+  }
+
   endHunt(pred) {
     if (!pred.hunt) return;
     const prey = pred.hunt.prey;
@@ -598,6 +664,7 @@ export class World {
     this.depositN(p.x, (prey.n || 0) - Math.min(keep, room));
     prey.n = 0;
     this.act.kills++;
+    this.killFx(p, prey);
     this.log(`A ${SPECIES[p.kind].name.toLowerCase()} caught ${prey.name} the ${SPECIES[prey.kind].name.toLowerCase()}.`, 'hunt');
     this.killFauna(prey, 'eaten');
     if (!this.offline) this.particles.burst(prey.x, prey.y, 8, { type: 'spark', color: prey.genome.c1, speed: 6 * this.U, life: 0.8, g: 10 * this.U });
@@ -688,6 +755,7 @@ export class World {
   // ------------------------------------------------------------ the sim
   update(dt) {
     this.t += dt;
+    if (this.fx.length && this.t - this.fx[0].t0 > 1.4) this.fx.shift();
     this.simTime = this.now();
     // breathing gusts of air inside the glass
     this._gustT -= dt;

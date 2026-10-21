@@ -1,6 +1,6 @@
 // DOM side of the app: dock, sheets, the task list, the field journal,
 // settings, the creature inspector and toasts.
-import { SPECIES, FAUNA_KINDS } from './species.js';
+import { SPECIES, FAUNA_KINDS, PREDATORS } from './species.js';
 import { CREATURES } from './fauna.js';
 import { Plant } from './flora.js';
 import { Ambient, escapeHtml, fmtAge, fmtDuration, mulberry32, hashStr, clamp } from './util.js';
@@ -428,6 +428,11 @@ export class UI {
   // ------------------------------------------------------------ inspector
   bindInspector() {
     $('#inspector .close').addEventListener('click', () => this.hideInspector());
+    $('#insp-hunt').addEventListener('click', () => {
+      const obj = this.inspecting;
+      if (obj) this.app.orderHunt(obj);
+      this.updateInspector(false);
+    });
     $('#insp-name').addEventListener('click', () => {
       const sel = this.app.selected;
       if (!sel || !sel.name || !sel.genome || !CREATURES[sel.kind]) return;
@@ -482,8 +487,28 @@ export class UI {
       $('#insp-origin').textContent = `Soil here: ${Math.round(w.fertAt(obj.x) * 100)}% rich`;
     }
     if (!isEgg && obj.inf > 0) facts.push(['Health', 'infected by gloomcap fungus']);
+    if (isCreature && obj.digest > 0 && !obj.hunt) facts.push(['Digesting', fmtAge(obj.digest)]);
+    this.huntButton(obj, isEgg);
     $('#insp-facts').innerHTML = facts.map(([a, b]) => `<dt>${a}</dt><dd>${escapeHtml(String(b))}</dd>`).join('');
     if (full || isCreature) this.portrait($('#insp-portrait'), isEgg ? kind : obj);
+  }
+
+  // predators and traps can be sent to hunt, every so often
+  huntButton(obj, isEgg) {
+    const b = $('#insp-hunt');
+    const hunter = !isEgg && (PREDATORS.includes(obj.kind) || obj.kind === 'snaplure' || obj.kind === 'dewveil');
+    b.hidden = !hunter;
+    if (!hunter) return;
+    const st = this.world.orderStatus(obj);
+    const trap = obj.kind === 'snaplure' ? 'Lure a petalmoth' : obj.kind === 'dewveil' ? 'Lure a bellwisp' : 'Send to hunt';
+    const text = st.ok ? trap
+      : st.why === 'cooldown' ? `Hunters are resting · ${fmtDuration(st.wait)}`
+      : st.why === 'busy' ? (obj.hunt || obj.lured ? 'Hunting…' : 'Busy')
+      : st.why === 'young' ? 'Too young to hunt'
+      : st.why === 'noprey' ? 'Not enough prey to spare'
+      : 'Unavailable';
+    if (b.textContent !== text) b.textContent = text;
+    b.disabled = !st.ok;
   }
 
   hideInspector() {

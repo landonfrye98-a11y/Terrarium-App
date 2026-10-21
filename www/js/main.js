@@ -16,7 +16,7 @@ import { UI } from './ui.js';
 import { SPECIES } from './species.js';
 import { setArt } from './fauna.js';
 import { setFloraArt } from './flora.js';
-import { Ambient, TAU, rr, dist2 } from './util.js';
+import { Ambient, TAU, rr, dist2, lerp, smooth, drawGlow } from './util.js';
 import { P } from './palette.js';
 
 const SAVE_KEY = 'glasswild.world.v1';
@@ -221,6 +221,7 @@ class App {
     this.drawItems(ctx, amb);
     for (const e of w.eggs) e.draw(ctx, w, amb);
     for (const c of w.fauna) c.draw(ctx, w, amb);
+    if (w.fx.length) this.drawKills(ctx, amb);
     this.drawWater(ctx);
 
     // additive light pass
@@ -249,6 +250,53 @@ class App {
     if (this.settings.dim > 0) {
       ctx.fillStyle = `rgba(0,0,0,${this.settings.dim})`;
       ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  // A kill: the prey is pulled into the predator's mouth and dissolves, with a
+  // strike flash and a few claw marks where it was taken.
+  drawKills(ctx, amb) {
+    const w = this.world, U = w.U;
+    for (const f of w.fx) {
+      const a = w.t - f.t0;
+      if (a > 1.4 || a < 0) continue;
+      if (a < 0.9 && f.prey) {
+        const k = smooth(a / 0.9);
+        const px = lerp(f.x, f.mx, k), py = lerp(f.y, f.my, k);
+        const sc = 1 - k * 0.75;
+        ctx.save();
+        ctx.globalAlpha = Math.pow(1 - a / 0.9, 1.4);
+        ctx.translate(px, py); ctx.scale(sc, sc); ctx.translate(-f.prey.x, -f.prey.y);
+        try { f.prey.draw(ctx, w, amb); } catch { /* a drawing glitch must not stop the frame */ }
+        ctx.restore();
+        ctx.globalAlpha = 1;
+      }
+      // claw marks, quick in, slow out: a dark edge under a pale stroke so
+      // they read on any background
+      if (a < 0.9) {
+        const k = a < 0.1 ? a / 0.1 : 1 - (a - 0.1) / 0.8;
+        const r = 6.5 * U, d = f.dir || 1;
+        ctx.lineCap = 'round';
+        for (let pass = 0; pass < 2; pass++) {
+          ctx.strokeStyle = pass ? amb.c(P.cream, 0.95 * k) : amb.c(P.ink, 0.45 * k);
+          ctx.lineWidth = Math.max(pass ? 1.6 : 3.2, U * (pass ? 0.5 : 0.95));
+          ctx.beginPath();
+          for (let i = -1; i <= 1; i++) {
+            const ox = f.x + i * 1.9 * U, oy = f.y + i * 0.7 * U;
+            const reach = 0.35 + 0.65 * Math.min(1, a / 0.1);
+            ctx.moveTo(ox - d * r * 0.5, oy - r * 0.55);
+            ctx.quadraticCurveTo(ox + d * r * 0.15 * reach, oy - r * 0.1, ox + d * r * (0.35 * reach - 0.15 * (1 - reach)), oy + r * (0.5 * reach));
+          }
+          ctx.stroke();
+        }
+      }
+      // strike flash
+      if (a < 0.5) {
+        ctx.globalCompositeOperation = 'lighter';
+        drawGlow(ctx, f.glow, f.x, f.y, (6 + a * 24) * U, (1 - a / 0.5) * 0.9);
+        drawGlow(ctx, P.cream, f.x, f.y, (3 + a * 8) * U, (1 - a / 0.5) * 0.6);
+        ctx.globalCompositeOperation = 'source-over';
+      }
     }
   }
 
@@ -354,6 +402,17 @@ class App {
     if (res.creature) this.ui.toast(`“${res.task.title}” bloomed into ${res.creature.name}, a ${SPECIES[res.creature.kind].name}.`, true, 6000);
     else this.ui.toast(`“${res.task.title}” bloomed. The glass is full, so it fed the soil.`, true, 5000);
     this.save();
+  }
+
+  // you point a predator (or trap) at its prey
+  orderHunt(pred) {
+    const r = this.world.orderHunt(pred);
+    if (r.ok) {
+      this.haptic([10, 40, 20]);
+      const prey = r.prey.name ? `${r.prey.name} the ${SPECIES[r.prey.kind].name.toLowerCase()}` : `a ${SPECIES[r.prey.species].name.toLowerCase()} egg`;
+      this.ui.toast(`${pred.name || 'The ' + SPECIES[pred.kind].name.toLowerCase()} is going after ${prey}.`, false, 4000);
+    }
+    return r;
   }
 
   select(obj) {
