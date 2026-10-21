@@ -81,6 +81,8 @@ npm run serve          # http://localhost:8080 — no build step, plain ES modul
 
 It uses one fixed pool of synth voices and suspends itself when hidden or idle.
 
+**Creature calls:** tap any creature and it answers in its own instrument, with a short phrase unique to that individual. This works even with the ambient music off, and it can be turned off under Glass.
+
 Debug URL parameters: `?fresh` (ignore the save), `?hour=20` (force the sky), `?done=12` (pretend 12 tasks are finished), `?warp=60` (speed up time), `?perf=saver`, `?fps` (log frame rate).
 
 The Android wrapper is [Capacitor](https://capacitorjs.com) (`android/`). CI (`.github/workflows/android.yml`) runs `cap sync` and `gradlew assembleRelease`, then publishes the release. `.github/workflows/pages.yml` deploys `www/` to GitHub Pages.

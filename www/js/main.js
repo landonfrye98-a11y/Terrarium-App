@@ -31,7 +31,7 @@ const PERF = {
 };
 const DEFAULTS = {
   perf: 'balanced', awake: true, clockMode: 'analog', h24: false, showSeconds: true, smoothSeconds: true,
-  labels: true, sky: 'real', dim: 0, autohide: true, sound: false, volume: 0.6, immersive: true, onboarded: false,
+  labels: true, sky: 'real', dim: 0, autohide: true, sound: false, tapSounds: true, volume: 0.6, immersive: true, onboarded: false,
 };
 const LAYER = { ribbonfin: 0, mireeel: 0, scuttler: 1, hookjaw: 2, stiltstrider: 3, mindbloom: 4, bellwisp: 5, petalmoth: 6, lancewing: 7 };
 
@@ -391,7 +391,13 @@ class App {
       return;
     }
     const hit = w.pick(x, y);
-    if (hit) { this.select(hit.obj); this.haptic(5); return; }
+    if (hit) {
+      this.select(hit.obj);
+      this.haptic(5);
+      // a tapped creature answers in its own instrument
+      if (hit.type === 'fauna' && this.settings.tapSounds) this.audio.voice(hit.obj.kind, hit.obj.genome.seed, Math.max(-0.8, Math.min(0.8, x / w.W * 2 - 1)));
+      return;
+    }
     if (this.ui.inspecting) this.ui.hideInspector();
     // a touch on the glass: a ripple of light, curious moths, a splash in the pond
     if (w.inPond(x) && y > w.pond.y - 2 * U && y < w.pondBottom(x)) {
@@ -559,7 +565,20 @@ class App {
 
   registerSW() {
     if (native || !('serviceWorker' in navigator) || location.protocol === 'file:' || params.has('nosw')) return;
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    // when a new version takes over, reload once so the page and its
+    // scripts all come from the same version
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloaded) return;
+      reloaded = true;
+      this.save();
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+      // check for a new version whenever the app comes back to the screen
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+    }).catch(() => {});
   }
 }
 

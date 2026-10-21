@@ -1,14 +1,38 @@
-// Offline-first cache for the app shell. Bump VERSION to ship an update.
-const VERSION = 'glasswild-v3';
+// Offline support for the app shell.
+//
+// Network first: when online, every file is revalidated with the server (a
+// cheap 304 when unchanged), so a refresh always shows the latest version.
+// The cache is only a fallback for when there's no connection or the network
+// is too slow. Downloads bypass the browser's HTTP cache, because GitHub Pages
+// tells browsers to reuse files for 10 minutes, which would otherwise let a
+// new version be built from stale files.
+const VERSION = 'glasswild-v4';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/main.js', 'js/world.js', 'js/fauna.js', 'js/flora.js', 'js/scenery.js', 'js/clock.js',
   'js/art.js', 'js/tasks.js', 'js/ui.js', 'js/audio.js', 'js/particles.js', 'js/palette.js', 'js/species.js', 'js/util.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
 ];
+const TIMEOUT_MS = 4000;
+
+const fresh = (url) => new Request(url, { cache: 'no-cache', credentials: 'same-origin' });
+
+// GitHub Pages marks files reusable for 10 minutes, which lets the browser's
+// in-memory cache hand out old scripts without asking us. Responses we pass
+// on are re-labelled so the browser always checks back first.
+function revalidating(res) {
+  if (!res || !res.ok || res.type === 'opaque') return res;
+  const h = new Headers(res.headers);
+  h.set('Cache-Control', 'no-cache');
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+}
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(
+    caches.open(VERSION)
+      .then((c) => Promise.all(SHELL.map((u) => fetch(fresh(u)).then((res) => { if (res.ok) return c.put(u, revalidating(res)); }))))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (e) => {
@@ -19,17 +43,25 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-// stale-while-revalidate: instant from cache, refreshed in the background
 self.addEventListener('fetch', (e) => {
-  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
-  e.respondWith(
-    caches.open(VERSION).then(async (cache) => {
-      const hit = await cache.match(e.request, { ignoreSearch: true });
-      const net = fetch(e.request).then((res) => {
-        if (res.ok) cache.put(e.request, res.clone());
-        return res;
-      }).catch(() => hit);
-      return hit || net;
-    }),
-  );
+  const req = e.request;
+  const url = new URL(req.url);
+  if (req.method !== 'GET' || url.origin !== location.origin) return;
+  e.respondWith((async () => {
+    const cache = await caches.open(VERSION);
+    const net = fetch(fresh(req.url)).then((raw) => {
+      const res = revalidating(raw);
+      if (res.ok) cache.put(req.url.split('?')[0], res.clone());
+      return res;
+    });
+    // a slow connection falls back to the saved copy rather than hanging
+    const slow = new Promise((resolve) => setTimeout(resolve, TIMEOUT_MS));
+    try {
+      const res = await Promise.race([net, slow]);
+      if (res) return res;
+    } catch { /* offline: use the saved copy */ }
+    const hit = await cache.match(req, { ignoreSearch: true });
+    if (hit) return hit;
+    return net.catch(() => Response.error());
+  })());
 });

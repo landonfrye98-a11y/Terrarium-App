@@ -540,37 +540,71 @@ export class Soundscape {
   // births are scored from world.act in tick(); kept for compatibility
   birth() {}
 
+  // Play a few notes even when ambient sound is off: the master comes up
+  // with the pad shut, then everything suspends again after holdMs.
+  // play(t0) schedules the notes from audio time t0.
+  async _oneShot(play, holdMs) {
+    if (!this.ensure()) return;
+    const ctx = this.ctx;
+    this._alertUntil = Date.now() + holdMs + 400;
+    const tok = (this._alertTok = (this._alertTok || 0) + 1);
+    clearTimeout(this._offTimer);
+    if (!this._running()) await this._ctxResume();
+    if (!this._running()) return;
+    const now = ctx.currentTime;
+    const ambient = this._live();
+    if (!ambient) {
+      const g = this.master.gain;
+      g.cancelScheduledValues(now); g.setValueAtTime(g.value, now);
+      g.linearRampToValueAtTime(Math.max(this._level(), 0.25), now + 0.03);
+      this.padGain.gain.cancelScheduledValues(now); this.padGain.gain.setValueAtTime(0, now);
+      this.voiceBus.gain.cancelScheduledValues(now); this.voiceBus.gain.setValueAtTime(1, now);
+      this._last = {};
+    }
+    play(now + 0.05);
+    if (!ambient) {
+      setTimeout(() => {
+        if (this._live() || tok !== this._alertTok) return; // ambient took over, or a newer sound owns it
+        this._fadeOut(0.1);
+        setTimeout(() => { if (!this._live() && tok === this._alertTok) this._ctxSuspend(); }, 400);
+      }, holdMs);
+    }
+  }
+
   // focus timer reached its target: a gentle 3-note bell, even with sound off
   async focusChime() {
     try {
-      if (!this.ensure()) return;
-      const ctx = this.ctx;
-      this._alertUntil = Date.now() + 3600;
-      const tok = (this._alertTok = (this._alertTok || 0) + 1);
-      clearTimeout(this._offTimer);
-      if (!this._running()) await this._ctxResume();
-      if (!this._running()) return;
-      const now = ctx.currentTime;
-      const ambient = this._live();
-      if (!ambient) {
-        // ambient is silent: bring the master up but keep the pad shut
-        const g = this.master.gain;
-        g.cancelScheduledValues(now); g.setValueAtTime(g.value, now);
-        g.linearRampToValueAtTime(Math.max(this._level(), 0.25), now + 0.03);
-        this.padGain.gain.cancelScheduledValues(now); this.padGain.gain.setValueAtTime(0, now);
-        this.voiceBus.gain.cancelScheduledValues(now); this.voiceBus.gain.setValueAtTime(1, now);
-        this._last = {};
-      }
-      const t = now + 0.06;
-      [ROOT * 4, ROOT * 4 * Math.pow(2, 7 / 12), ROOT * 8].forEach((f, i) =>
-        this._note('bell', f, t + i * 0.42, 1.2 - i * 0.15, { dur: 2.4, pan: -0.3 + i * 0.3 }));
-      if (!ambient) {
-        setTimeout(() => {
-          if (this._live() || tok !== this._alertTok) return; // ambient took over, or a newer chime owns it
-          this._fadeOut(0.1);
-          setTimeout(() => { if (!this._live() && tok === this._alertTok) this._ctxSuspend(); }, 400);
-        }, 3200);
-      }
+      await this._oneShot((t) => {
+        [ROOT * 4, ROOT * 4 * Math.pow(2, 7 / 12), ROOT * 8].forEach((f, i) =>
+          this._note('bell', f, t + i * 0.42, 1.2 - i * 0.15, { dur: 2.4, pan: -0.3 + i * 0.3 }));
+      }, 3200);
+    } catch {}
+  }
+
+  // A creature was tapped: it answers in its own instrument. The phrase is
+  // seeded by its genome, so each individual has a recognisable little call.
+  async voice(kind, seed = 0, pan = 0) {
+    try {
+      if (Date.now() - (this._lastVoice || 0) < 250) return; // no machine-gunning
+      this._lastVoice = Date.now();
+      let r = (seed >>> 0) || 1;
+      const next = () => { r = (Math.imul(r, 1664525) + 1013904223) >>> 0; return r / 4294967296; };
+      const steps = [[0, 2, 4], [0, 4, 2], [4, 2, 0], [0, 1, 2, 4], [2, 4, 7], [0, 2, 0]][(next() * 6) | 0];
+      const base = (next() * 5) | 0;
+      const spec = KIND_SPEC[kind] || (kind === 'mindbloom' ? 'bellwisp' : 'bell');
+      const sp = SPECS[spec];
+      const oct = sp.oct + (KIND_OCT[kind] ?? 0);
+      const gap = sp.shape === 'swell' ? 0.5 : spec === 'stiltstrider' || spec === 'scuttler' ? 0.16 : 0.22;
+      const loud = sp.shape === 'swell' ? 1.6 : 1.4;
+      await this._oneShot((t) => {
+        const d0 = this.chordDeg + base;
+        if (kind === 'mindbloom') {
+          // a choral swell rather than a tune
+          [0, 4, 7].forEach((k, i) => this._note('bellwisp', this._freq(d0 + k, 1), t + i * 0.25, 1.4, { att: 0.9, dur: 2.2, pan: -0.5 + i * 0.5 }));
+          return;
+        }
+        steps.forEach((k, i) => this._note(spec, this._freq(d0 + k, oct), t + i * gap, loud - i * 0.1, { pan }));
+      }, sp.shape === 'swell' ? 3600 : 2600);
     } catch {}
   }
 }
