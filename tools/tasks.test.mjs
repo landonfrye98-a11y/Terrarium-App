@@ -74,12 +74,14 @@ test('snoozing makes the weed recede, finishing kills it', () => {
   g.updateWeeds();
   g.snooze(t.id);
   assert.ok(t.due > Date.now());
-  assert.equal(g.stage(t), 3); // still there right after
-  t.weedAt -= 0.6 * DAY; // ~14 hours later
+  assert.ok(g.stage(t) > 0 && g.stage(t) < 3); // shrinks back to a small weed at once
+  t.weedAt -= 0.4 * DAY; // ~10 hours later
   g.updateWeeds();
-  assert.ok(g.stage(t) < 3);
+  assert.equal(g.stage(t), 0); // and dies off within hours
   t.due = Date.now() - 9 * DAY; g.updateWeeds();
   assert.equal(g.stage(t), 4);
+  t.due = Date.now() - 90 * DAY; g.updateWeeds();
+  assert.ok(t.weed <= 10); // capped, so it can't take weeks to recede
   g.complete(t.id); g.updateWeeds();
   assert.equal(g.stage(t), 0);
   assert.equal(Math.max(...w.blight), 0);

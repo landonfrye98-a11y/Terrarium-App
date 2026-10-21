@@ -11,7 +11,7 @@
 //     "remind" setting), or at 9 in the morning for a task due "on a day";
 //   - one nudge the next morning if it's still not done, when its weed has
 //     started to grow.
-import { DAY, startOfDay, fmtDue } from './when.js';
+import { DAY, addDays, fmtDue } from './when.js';
 
 const MORNING = 9; // o'clock, for all-day tasks and overdue nudges
 const MAX = 48; // the system allows a limited number of pending alarms
@@ -19,7 +19,7 @@ const SHOWN_KEY = 'glasswild.reminded';
 
 // a stable 31-bit id for a task + kind, as Android wants an int
 const idOf = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 1) || 1; };
-const morningOf = (t) => startOfDay(t) + MORNING * 3600000;
+const morningOf = (t) => { const d = new Date(t); d.setHours(MORNING, 0, 0, 0); return d.getTime(); };
 
 export class Reminders {
   constructor(app, native) {
@@ -52,15 +52,20 @@ export class Reminders {
     const out = [];
     for (const t of tasks) {
       if (t.state === 'done' || t.due == null) continue;
-      const at = t.allDay ? morningOf(t.due) : t.due - lead * 60000;
+      let at = t.allDay ? morningOf(t.due) : t.due - lead * 60000;
+      // too late for the early warning, but not for the due time itself
+      if (!t.allDay && at <= now && t.due > now) at = Math.min(t.due, now + 5000);
       const when = fmtDue(t.due, t.allDay, Math.min(at, t.due - 1));
       if (at > now) out.push({ id: idOf(t.id + ':due'), at, title: t.title, body: t.allDay ? `Due today. Finish it and it blooms.` : lead ? `Due ${when}.` : 'Due now. Finish it and it blooms.' });
-      const nudge = morningOf(t.due + DAY);
+      const nudge = morningOf(addDays(t.due, 1));
       if (nudge > now) out.push({ id: idOf(t.id + ':late'), at: nudge, title: `Overdue: ${t.title}`, body: 'Weeds have started growing out of its pod in your glass.' });
     }
     out.sort((a, b) => a.at - b.at);
     return out.slice(0, MAX);
   }
+
+  // the web only arms the next day of timers, so re-plan now and then
+  refresh(tasks) { if (!this.LN && this.app.settings.reminders) { this.sig = ''; this.sync(tasks); } }
 
   // called whenever tasks change; cheap when nothing that matters did
   sync(tasks) {

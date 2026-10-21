@@ -92,10 +92,15 @@ class App {
         away = this.world.catchUp((Date.now() - (save.savedAt || Date.now())) / 1000);
       } catch (e) {
         console.error('Could not restore the glass, starting fresh', e);
+        store.set(SAVE_KEY + '.broken', save); // kept aside, in case it can be rescued
+        this.restoreFailed = true;
         this.world = new World();
         this.world.taskOnly = !this.settings.autoSpawn;
+        this.world.skyMode = this.settings.sky;
+        if (params.has('hour')) this.world.forceHour = parseFloat(params.get('hour'));
         this.world.layout(this.W, this.H, this.topInset);
-        this.garden = new TaskGarden(this.world, null);
+        // the tasks don't depend on the world: keep them
+        this.garden = new TaskGarden(this.world, save?.garden);
         this.world.genesis();
       }
     } else {
@@ -120,7 +125,9 @@ class App {
     this.applyAll();
     this.reminders.catchUp(this.garden.tasks, save?.savedAt);
     this.splash(away);
-    this.start();
+    if (this.restoreFailed) setTimeout(() => this.ui.toast('Your glass couldn’t be loaded, so a new one was started. Your tasks were kept.', true, 8000), 1500);
+    if (document.hidden) this.hiddenAt = Date.now(); // starts properly when first shown
+    else this.start();
     setInterval(() => this.slowTick(), 1000);
     this.loadArt();
     this.registerSW();
@@ -267,6 +274,7 @@ class App {
     // sort draw order once a second
     this.focusTick();
     if (w._sortDirty) { w.fauna.sort((a, b) => LAYER[a.kind] - LAYER[b.kind]); w._sortDirty = false; }
+    if (!(this._remT = ((this._remT || 0) + 1) % 600)) this.reminders?.refresh(this.garden.tasks); // every 10 minutes
     const worse = this.garden.tick();
     if (worse) this.weedNotice(worse);
     this.updateBadge();
@@ -483,7 +491,8 @@ class App {
     if (!t) { this.focusLabel = null; this.cometMark = null; return; }
     const el = g.elapsed(t), target = g.targetMs(t);
     const left = Math.ceil((target - el) / 60000);
-    const title = t.title.length > 28 ? t.title.slice(0, 27) + '…' : t.title;
+    const ch = Array.from(t.title);
+    const title = ch.length > 28 ? ch.slice(0, 27).join('') + '…' : t.title;
     this.focusLabel = el >= target ? `${title} · in bloom` : `${title} · ${left} min left`;
     const mark = Math.floor(el / 300000);
     if (this.cometMark == null || this.cometTask !== t.id) { this.cometMark = mark; this.cometTask = t.id; return; }
@@ -622,6 +631,7 @@ class App {
         const wx = pinch.cx + pinch.mx / pinch.z, wy = pinch.cy + pinch.my / pinch.z;
         this.setCam(nz, wx - g.mx / nz, wy - g.my / nz, true);
       } else if (grab && pts.size === 1) {
+        if (grab.c.dead) { release(); return; } // it died in your hand
         if (!grab.lifted && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) lift();
         if (grab.lifted) {
           const p = toWorld(e.clientX, e.clientY);
@@ -716,6 +726,11 @@ class App {
       else this.wakeUp();
     });
     window.addEventListener('pagehide', () => this.save());
+    window.addEventListener('storage', (e) => {
+      if (e.key !== SAVE_KEY || this.otherTab) return;
+      this.otherTab = true;
+      this.ui.toast('Glasswild is open in another tab or window. This one has stopped saving; come back to it and it will reload.', true, 8000);
+    });
     window.addEventListener('focus', () => { if (!document.hidden && !this.running) this.wakeUp(); });
     const App = plugin('App');
     App?.addListener?.('appStateChange', ({ isActive }) => (isActive ? this.wakeUp() : this.sleep()));
@@ -730,9 +745,12 @@ class App {
   }
 
   wakeUp() {
+    this.applyWake(); // the system may have dropped the wake lock
+    if (this.otherTab) { this.leaving = true; location.reload(); return; } // pick up what the other tab saved
     if (this.running) return;
     const gone = this.hiddenAt ? (Date.now() - this.hiddenAt) / 1000 : 0;
     this.reminders.catchUp(this.garden.tasks, this.hiddenAt);
+    this.reminders.refresh(this.garden.tasks);
     this.hiddenAt = 0;
     if (gone > 20) {
       this.garden.updateWeeds();
@@ -759,9 +777,18 @@ class App {
   }
 
   save() {
-    if (this.leaving) return;
+    if (this.leaving || this.otherTab) return;
     this.lastSave = this.world.t;
-    store.set(SAVE_KEY, { v: 1, savedAt: Date.now(), world: this.world.serialize(), garden: this.garden.serialize() });
+    let data;
+    try { data = JSON.stringify({ v: 1, savedAt: Date.now(), world: this.world.serialize(), garden: this.garden.serialize() }); }
+    catch (e) { console.error('could not save the glass', e); this.saveFailed(); return; }
+    try { localStorage.setItem(SAVE_KEY, data); this.saveFails = 0; }
+    catch (e) { console.error('could not save the glass', e); this.saveFailed(); }
+  }
+
+  saveFailed() {
+    this.saveFails = (this.saveFails || 0) + 1;
+    if (this.saveFails === 3) this.ui?.toast('Glasswild couldn’t save your glass. Use Export in the Glass settings to keep a copy of your tasks.', true, 8000);
   }
 
   // ------------------------------------------------------------ settings
@@ -818,8 +845,19 @@ class App {
   }
 
   // ------------------------------------------------------------ data
-  exportData() {
+  async exportData() {
     this.save();
+    const FS = plugin('Filesystem'), Share = plugin('Share');
+    if (FS && Share) {
+      try {
+        const name = `glasswild-${dayKey()}.json`;
+        const r = await FS.writeFile({ path: name, data: localStorage.getItem(SAVE_KEY) || '{}', directory: 'CACHE', encoding: 'utf8' });
+        await Share.share({ title: 'Glasswild backup', files: [r.uri], dialogTitle: 'Save your glass' });
+      } catch (e) {
+        if (!/cancel/i.test(String(e?.message))) { console.warn('export failed', e); this.ui.toast('The backup couldn’t be exported.', false, 4000); }
+      }
+      return;
+    }
     const blob = new Blob([localStorage.getItem(SAVE_KEY) || '{}'], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -830,7 +868,13 @@ class App {
   // both replace the save and reload; the autosave that fires as the page
   // unloads must not write the old glass back over it
   importData(d) {
-    if (!d || !d.world || !Array.isArray(d.world.fauna)) throw new Error('bad file');
+    if (!d || !d.world || !Array.isArray(d.world.fauna) || !Array.isArray(d.world.flora)) throw new Error('bad file');
+    if (d.garden != null && !Array.isArray(d.garden.tasks)) throw new Error('bad file');
+    // a dry run: if it won't load here, it won't load after the reload either
+    const w = new World(d.world.seed);
+    w.layout(this.W, this.H, this.topInset);
+    w.restore(structuredClone(d.world));
+    new TaskGarden(w, structuredClone(d.garden || null));
     this.leaving = true;
     this.stop();
     store.set(SAVE_KEY, d);

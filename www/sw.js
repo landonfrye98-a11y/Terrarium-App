@@ -6,7 +6,7 @@
 // is too slow. Downloads bypass the browser's HTTP cache, because GitHub Pages
 // tells browsers to reuse files for 10 minutes, which would otherwise let a
 // new version be built from stale files.
-const VERSION = 'glasswild-v10';
+const VERSION = 'glasswild-v11';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/main.js', 'js/world.js', 'js/fauna.js', 'js/flora.js', 'js/scenery.js', 'js/clock.js',

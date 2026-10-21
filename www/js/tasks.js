@@ -4,7 +4,7 @@
 // of the day's work, then compost back into the soil.
 import { P, FAMILIES } from './palette.js';
 import { TAU, clamp, hashStr, mulberry32, pick, uid, drawGlow, smooth, mixHex } from './util.js';
-import { parseEntry, endOfDay, startOfDay, DAY } from './when.js';
+import { parseEntry, endOfDay, startOfDay, addDays, DAY } from './when.js';
 
 // Neglect. A task past its due date grows a weed out of its pod, and the
 // longer it's left the worse it gets, gently at first:
@@ -116,8 +116,8 @@ export class TaskGarden {
       t.weedAt = now;
       const late = (now - this.deadline(t)) / DAY;
       const before = this.stage(t);
-      if (late > 0) t.weed = Math.max(t.weed || 0, late, 0.001);
-      else if (t.weed > 0) t.weed = Math.max(0, t.weed - RECEDE * (now - last) / DAY);
+      if (late > 0) t.weed = Math.min(10, Math.max(t.weed || 0, late, 0.001));
+      else if (t.weed > 0) t.weed = Math.max(0, Math.min(t.weed, 1.5) - RECEDE * (now - last) / DAY);
       const after = this.stage(t);
       if (after > before && (!worse || after > this.stage(worse))) worse = t;
       t._stage = after;
@@ -155,10 +155,12 @@ export class TaskGarden {
     if (!t) return;
     const now = Date.now();
     if (t.due != null && !t.allDay) {
-      const d = new Date(t.due), n = new Date(startOfDay(now) + DAY);
+      // the same time, a day after it was due (or tomorrow, if it's late)
+      const d = new Date(t.due);
+      const n = new Date(addDays(startOfDay(Math.max(t.due, now)), 1));
       n.setHours(d.getHours(), d.getMinutes(), 0, 0);
       t.due = n.getTime();
-    } else t.due = endOfDay(now + DAY);
+    } else t.due = endOfDay(addDays(Math.max(t.due ?? now, now), 1));
     t.allDay = t.allDay ?? true;
     t.touched = now;
     if (t.weed) this.world.log(`“${t.title}” was put off until tomorrow. Its weeds will die back.`, 'task');
@@ -191,7 +193,8 @@ export class TaskGarden {
     st.done = !st.done;
     st.doneAt = st.done ? Date.now() : null;
     t.touched = Date.now();
-    if (st.done) {
+    if (st.done && !st.rewarded) {
+      st.rewarded = true; // ticking a step on and off again gives nothing more
       const w = this.world, U = w.U;
       const p = this.budPos(t, t.steps.indexOf(st));
       w.particles.burst(p.x, p.y, 10, { type: 'spark', color: t.c1, glow: t.glow, speed: 9 * U, life: 1.1, g: -2 * U });
@@ -273,8 +276,8 @@ export class TaskGarden {
     if (w.offline) return;
     const U = w.U;
     for (const t of this.tasks) {
-      const st = t._stage;
-      if (st < 3 || Math.random() > (st === 4 ? 0.9 : 0.35)) continue;
+      const st = t.state === 'done' ? 0 : t._stage;
+      if (!(st >= 3) || Math.random() > (st === 4 ? 0.9 : 0.35)) continue;
       const p = this.podPos(t, _pos);
       w.particles.emit({ type: 'mote', x: p.x + (Math.random() - 0.5) * 10 * U, y: p.y - (4 + Math.random() * 6) * U, vx: (Math.random() - 0.5) * 4 * U, vy: -(1 + Math.random() * 3) * U, g: -0.5 * U, drag: 0.6, wob: 6, life: 3 + Math.random() * 2, size: 1.2 + Math.random(), color: st === 4 ? WEED.spore : WEED.pus });
     }
@@ -496,7 +499,8 @@ export class TaskGarden {
       const key = t.title + (n ? this.stepsDone(t) + '/' + n : '');
       if (t._lwT !== key || t._lwF !== _fontStr) {
         t._lwT = key; t._lwF = _fontStr;
-        t._lbl = (t.title.length > 14 ? t.title.slice(0, 13) + '…' : t.title) + (n ? ` ${this.stepsDone(t)}/${n}` : '');
+        const ch = Array.from(t.title);
+        t._lbl = (ch.length > 14 ? ch.slice(0, 13).join('') + '…' : t.title) + (n ? ` ${this.stepsDone(t)}/${n}` : '');
         t._lw = ctx.measureText(t._lbl).width;
       }
       const label = t._lbl;

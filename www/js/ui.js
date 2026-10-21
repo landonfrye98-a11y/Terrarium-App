@@ -5,7 +5,7 @@ import { CREATURES } from './fauna.js';
 import { Plant } from './flora.js';
 import { Ambient, escapeHtml, fmtAge, fmtDuration, mulberry32, hashStr, clamp } from './util.js';
 import { dayKey, STAGE_NAME } from './tasks.js';
-import { fmtDue, endOfDay } from './when.js';
+import { fmtDue, endOfDay, addDays } from './when.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -90,6 +90,8 @@ export class UI {
     el.classList.remove('closing');
     $('#scrim').hidden = false;
     this.openSheet = name;
+    this.opener = document.activeElement;
+    requestAnimationFrame(() => el.querySelector('h2')?.focus({ preventScroll: true }));
     if (name === 'tasks') { this.renderTasks(); }
     if (name === 'journal') this.renderJournal();
     if (name === 'settings') this.renderSettings();
@@ -103,6 +105,8 @@ export class UI {
     this.openSheet = null;
     $('#scrim').hidden = true;
     document.activeElement?.blur?.();
+    if (this.opener?.isConnected && this.opener.closest?.('#dock')) this.opener.focus({ preventScroll: true });
+    this.opener = null;
     if (instant) { el.hidden = true; return; }
     el.classList.add('closing');
     setTimeout(() => { if (this.openSheet !== name) { el.hidden = true; el.classList.remove('closing'); } }, 230);
@@ -196,7 +200,6 @@ export class UI {
     const g = this.garden;
     const t = g.find(id);
     if (!t) return;
-    const dayMs = 86400000;
     switch (act) {
       case 'expand': {
         if (e?.target.closest('button, input, form, a')) return;
@@ -217,9 +220,9 @@ export class UI {
       }
       case 'rmstep': g.removeStep(id, b.closest('[data-sid]').dataset.sid); break;
       case 'due-today': g.setDue(id, Date.now(), true); break;
-      case 'due-tomorrow': g.setDue(id, Date.now() + dayMs, true); break;
-      case 'due-weekend': { const d = new Date(); g.setDue(id, d.getTime() + ((6 - d.getDay() + 7) % 7 || 7) * dayMs, true); break; }
-      case 'due-week': g.setDue(id, Date.now() + 7 * dayMs, true); break;
+      case 'due-tomorrow': g.setDue(id, addDays(Date.now(), 1), true); break;
+      case 'due-weekend': { const d = new Date(); g.setDue(id, addDays(d.getTime(), (6 - d.getDay() + 7) % 7 || 7), true); break; }
+      case 'due-week': g.setDue(id, addDays(Date.now(), 7), true); break;
       case 'due-clear': g.setDue(id, null); break;
       case 'snooze': g.snooze(id); this.app.haptic(6); this.toast(`“${t.title}” is now due ${fmtDue(t.due, t.allDay)}.`, false, 3000); break;
       case 'more': this.hideTaskCard(); this.openTask = id; this.open('tasks'); requestAnimationFrame(() => $(`#task-list li[data-id="${id}"]`)?.scrollIntoView({ block: 'center' })); return;
@@ -258,6 +261,25 @@ export class UI {
     if (t.steps.length) out.push(`<span class="nsteps">${g.stepsDone(t)}/${t.steps.length} steps</span>`);
     if (t.state === 'active' || g.elapsed(t) > 0) out.push(`<span data-el="${t.id}">${this.taskStatus(t)}</span>`);
     return out.join('');
+  }
+
+  // rebuild a container without losing what's being typed in it
+  keepTyping(box, rebuild) {
+    const a = document.activeElement;
+    let keep = null;
+    if (a && box.contains(a) && a.matches('input')) {
+      const host = a.closest('[data-id]');
+      const cls = a.className ? '.' + a.className.trim().split(/\s+/).join('.') : a.tagName.toLowerCase();
+      keep = { id: host?.dataset.id, sel: (a.closest('form.addstep') ? 'form.addstep ' : '') + cls, v: a.value, s0: a.selectionStart, s1: a.selectionEnd };
+    }
+    rebuild();
+    if (!keep || this.refocus) return;
+    const host = keep.id && box.dataset.id !== keep.id ? box.querySelector(`[data-id="${keep.id}"]`) : box;
+    const el = host?.querySelector(keep.sel);
+    if (!el) return;
+    el.value = keep.v;
+    el.focus({ preventScroll: true });
+    try { if (keep.s0 != null) el.setSelectionRange(keep.s0, keep.s1); } catch {}
   }
 
   renderTasks() {
@@ -306,7 +328,7 @@ export class UI {
           ${open ? this.taskDetail(t) : ''}</li>`;
       }).join('');
     }
-    $('#task-list').innerHTML = html || '<li class="empty">No seeds yet. What are you working on?</li>';
+    this.keepTyping($('#task-list'), () => { $('#task-list').innerHTML = html || '<li class="empty">No seeds yet. What are you working on?</li>'; });
     $('#done-list').innerHTML = done.length ? done.map((t) => {
       const c = t.creature;
       const alive = c && this.world.find(c.id);
@@ -351,12 +373,14 @@ export class UI {
     this.hideInspector();
     this.cardTask = t.id;
     $('#task-card').hidden = false;
+    document.body.classList.add('card-open');
     this.renderTaskCard();
   }
   hideTaskCard(id) {
     if (id && this.cardTask !== id) return;
     this.cardTask = null;
     $('#task-card').hidden = true;
+    if (!this.inspecting) document.body.classList.remove('card-open');
   }
   renderTaskCard() {
     const id = this.cardTask;
@@ -371,7 +395,7 @@ export class UI {
     const el = $('#task-card');
     el.dataset.id = id;
     el.className = `chrome card${st ? ' late s' + st : ''}`;
-    $('#tc-body').innerHTML = `
+    this.keepTyping(el, () => { $('#tc-body').innerHTML = `
       <div class="tc-head"><i class="pod" style="background:${t.c1}"></i><h4 data-act="rename">${escapeHtml(t.title)}</h4></div>
       <div class="meta">${this.taskMeta(t, now) || '<span>a seed in the soil · no due date</span>'}</div>
       ${st ? `<p class="weed-note">${['', 'Thorny shoots are pushing out of its pod. Finish it, snooze it, or pull the weed.', 'Its weeds are souring the soil: plants nearby are dying and nothing sprouts.', 'Feral brambles are choking the plants and scratching passing creatures.', 'Its blight spores are giving creatures the gloomcap fungus.'][st]}</p>` : ''}
@@ -380,7 +404,7 @@ export class UI {
         <button class="btn" data-act="${active ? 'pause' : 'start'}">${active ? 'Pause' : 'Start focus'}</button>
         <button class="btn accent" data-act="done">${open && t.steps.length ? 'Finish all' : 'Done'}</button>
         <button class="btn ghost" data-act="more" aria-label="Open in the task list">List ›</button>
-      </div>`;
+      </div>`; });
     if (this.refocus) $(`#task-card ${this.refocus.replace(/^\[data-id="[^"]+"\]\s*/, '')}`)?.focus();
   }
 
@@ -471,7 +495,7 @@ export class UI {
   }
 
   renderJournal() {
-    $$('#sheet-journal .tabs button').forEach((x) => x.classList.toggle('on', x.dataset.tab === this.tab));
+    $$('#sheet-journal .tabs button').forEach((x) => { x.classList.toggle('on', x.dataset.tab === this.tab); x.setAttribute('aria-selected', String(x.dataset.tab === this.tab)); });
     for (const k of ['species', 'living', 'family', 'log']) $(`#tab-${k}`).hidden = k !== this.tab;
     if (this.tab === 'species') this.renderSpecies();
     else if (this.tab === 'living') this.renderLiving();
@@ -700,7 +724,7 @@ export class UI {
     $('#import-file').addEventListener('change', async (e) => {
       const f = e.target.files[0];
       if (!f) return;
-      try { this.app.importData(JSON.parse(await f.text())); } catch { this.toast('That file could not be read.'); }
+      try { this.app.importData(JSON.parse(await f.text())); } catch { this.toast('That file isn’t a Glasswild backup that can be loaded, so nothing was changed.', false, 5000); }
       e.target.value = '';
     });
     const reset = $('#btn-reset');
@@ -738,6 +762,7 @@ export class UI {
       if (obj) this.app.orderHunt(obj);
       this.updateInspector(false);
     });
+    $('#insp-name').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.target.click(); } });
     $('#insp-name').addEventListener('click', () => {
       const sel = this.app.selected;
       if (!sel || !sel.name || !sel.genome || !CREATURES[sel.kind]) return;
@@ -754,7 +779,9 @@ export class UI {
     this.hideTaskCard();
     const el = $('#inspector');
     el.hidden = false;
+    document.body.classList.add('card-open');
     this.inspecting = obj;
+    this._goneShown = null;
     this.updateInspector(true);
   }
 
@@ -767,7 +794,14 @@ export class UI {
     const kind = isEgg ? obj.species : obj.kind;
     const sp = SPECIES[kind];
     if (obj.dead || obj.gone) {
-      $('#insp-origin').textContent = isEgg ? 'It has hatched.' : 'It is gone now.';
+      if (this._goneShown === obj) return;
+      this._goneShown = obj;
+      const how = { eaten: 'It was eaten.', age: 'It died of old age.', starved: 'It starved.', fungus: 'The fungus took it.', burst: 'It burst into spores.' }[obj.cause] || 'It is gone now.';
+      $('#insp-origin').textContent = isEgg ? 'It has hatched.' : how;
+      $('#insp-facts').innerHTML = '';
+      $('#insp-energy').style.width = '0%';
+      $('#insp-hunt').hidden = true;
+      $('#insp-traits').hidden = true;
       return;
     }
     let facts = [];
@@ -840,6 +874,7 @@ export class UI {
 
   hideInspector() {
     $('#inspector').hidden = true;
+    if (!this.cardTask) document.body.classList.remove('card-open');
     this.inspecting = null;
     this.app.selected = null;
   }

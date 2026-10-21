@@ -430,7 +430,7 @@ export class Plant {
 
   serialize(world) {
     const o = {};
-    for (const k in this) if (k[0] !== '_') o[k] = this[k];
+    for (const k in this) if (k[0] !== '_' && k !== 'lured' && k !== 'lureUntil') o[k] = this[k];
     o.x = this.x / world.W;
     return o;
   }

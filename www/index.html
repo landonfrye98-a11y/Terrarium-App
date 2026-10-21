@@ -52,14 +52,14 @@
   <div id="scrim" hidden></div>
 
   <!-- tasks -->
-  <section class="sheet" id="sheet-tasks" aria-label="Tasks" hidden>
+  <section class="sheet" id="sheet-tasks" role="dialog" aria-modal="true" aria-label="Tasks" hidden>
     <div class="grab"></div>
-    <header><h2>Seeds &amp; blooms</h2><button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
+    <header><h2 tabindex="-1">Seeds &amp; blooms</h2><button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
     <form id="task-form" autocomplete="off">
-      <textarea id="task-input" rows="1" maxlength="2000" placeholder="Plant a task… “mow lawn sat”" enterkeyhint="done" aria-label="New task"></textarea>
+      <textarea id="task-input" rows="1" maxlength="2000" placeholder="Plant a task… “mow lawn saturday”" enterkeyhint="done" aria-label="New task"></textarea>
       <button type="submit" class="btn accent">Plant</button>
     </form>
-    <p class="hint" id="task-hint">Each task becomes a seed in the soil. Press ▶ while you work on it and a sprout grows; finish it and it blooms into a creature.<br>End a task with a day or time (“tomorrow 3pm”, “sat”, “oct 24”) to give it a due date. Add steps after a colon (“Clean house sun: trash, dishes, vacuum”), or paste a list. Tap a task to see its steps. <b>Leave a task overdue and it grows weeds, and the longer you leave it, the more the glass suffers.</b></p>
+    <p class="hint" id="task-hint">Each task becomes a seed in the soil. Press ▶ while you work on it and a sprout grows; finish it and it blooms into a creature.<br>End a task with a day or time (“tomorrow 3pm”, “saturday”, “oct 24”) to give it a due date. Add steps after a colon (“Clean house sunday: trash, dishes, vacuum”), or paste a list. Tap a task to see its steps. <b>Leave a task overdue and it grows weeds, and the longer you leave it, the more the glass suffers.</b></p>
     <ul class="task-list" id="task-list"></ul>
     <h3>Bloomed today <small id="bloomed-count"></small></h3>
     <ul class="task-list done" id="done-list"></ul>
@@ -67,9 +67,9 @@
   </section>
 
   <!-- journal -->
-  <section class="sheet" id="sheet-journal" aria-label="Field journal" hidden>
+  <section class="sheet" id="sheet-journal" role="dialog" aria-modal="true" aria-label="Field journal" hidden>
     <div class="grab"></div>
-    <header><h2>Field journal</h2><button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
+    <header><h2 tabindex="-1">Field journal</h2><button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
     <div class="tabs" role="tablist">
       <button role="tab" data-tab="species" class="on">Species</button>
       <button role="tab" data-tab="living">Living</button>
@@ -83,9 +83,9 @@
   </section>
 
   <!-- settings -->
-  <section class="sheet" id="sheet-settings" aria-label="Settings" hidden>
+  <section class="sheet" id="sheet-settings" role="dialog" aria-modal="true" aria-label="Settings" hidden>
     <div class="grab"></div>
-    <header><h2>The glass</h2><button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
+    <header><h2 tabindex="-1">The glass</h2><button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
 
     <div class="setting">
       <label>Battery</label>
@@ -145,7 +145,7 @@
     <button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     <canvas id="insp-portrait" width="120" height="120"></canvas>
     <div class="insp-body">
-      <h4 id="insp-name"></h4>
+      <h4 id="insp-name" role="button" tabindex="0" aria-label="Rename this creature"></h4>
       <p class="latin" id="insp-latin"></p>
       <dl id="insp-facts"></dl>
       <div id="insp-traits" class="traits" hidden></div>

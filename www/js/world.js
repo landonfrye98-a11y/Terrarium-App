@@ -94,7 +94,19 @@ export class World {
     if (oW && (oW !== W || oH !== H)) {
       const sx = W / oW, sy = H / oH;
       for (const list of [this.flora, this.fauna, this.eggs, this.items]) for (const e of list) { e.x *= sx; if (e.y != null) e.y *= sy; }
+      // the pond sits differently in portrait and landscape: walk anyone out of it
+      for (const c of this.fauna) if (World.GROUND.includes(c.kind) && this.inPond(c.x, 4 * this.U)) { c.x = c.tx = this.bankX(c.x); c.y = this.groundY(c.x); c.state = 'idle'; c.timer = 1; }
+      for (const p of this.flora) if (p.kind !== 'dewveil' && this.inPond(p.x, 2 * this.U)) p.x = this.bankX(p.x);
     }
+  }
+
+  // the nearest dry bank to x that leaves room for a walker beside the glass wall
+  bankX(x) {
+    const U = this.U, P0 = this.pond;
+    const right = P0.x1 + 6 * U, left = P0.x0 - 6 * U;
+    if (right > this.W - 10 * U) return left;
+    if (left < 10 * U) return right;
+    return x < P0.cx ? left : right;
   }
 
   groundAt(x) {
@@ -192,8 +204,8 @@ export class World {
     const pop = this.pop, ep = this.eggPop;
     for (const k of FAUNA_KINDS) { pop[k] = 0; ep[k] = 0; }
     for (const b of this.bk) b.length = 0;
-    for (const c of this.fauna) { pop[c.kind]++; this.bk[this.bucketOf(c.x)].push(c); }
-    for (const e of this.eggs) ep[e.species]++;
+    for (const c of this.fauna) { if (c.dead) continue; pop[c.kind]++; this.bk[this.bucketOf(c.x)].push(c); }
+    for (const e of this.eggs) if (!e.gone) ep[e.species]++;
     this.mush.fill(0);
     this.traps.length = 0;
     for (const p of this.flora) {
@@ -313,9 +325,12 @@ export class World {
     this.eggPop[e.species] = Math.max(0, (this.eggPop[e.species] || 1) - 1);
     if (!this.unlocked(e.species) || this.count(e.species) >= this.ceil(e.species) || this.fauna.length >= MAX_FAUNA) {
       this.bankAdd(e.species, e.genome, e.n || 0);
+      e.n = 0;
       return;
     }
-    const c = this.spawn(e.species, { x: e.x, y: e.y, genome: e.genome, n: e.n || 0, gen: e.gen, pid: e.pid ?? null, origin: e.origin || `Child of ${e.parentName}`, energy: 0.6 });
+    const en = e.n || 0;
+    e.n = 0;
+    const c = this.spawn(e.species, { x: e.x, y: e.y, genome: e.genome, n: en, gen: e.gen, pid: e.pid ?? null, origin: e.origin || `Child of ${e.parentName}`, energy: 0.6 });
     if (c.kind === 'ribbonfin') c.y = Math.min(c.y, this.pondBottom(c.x) - 2 * this.U);
     if (c.kind === 'petalmoth') c.y = Math.min(c.y, this.groundY(c.x) - 4 * this.U);
     this.stats.births++;
@@ -333,6 +348,7 @@ export class World {
     this._dirty = true;
     this.eggPop[e.species] = Math.max(0, (this.eggPop[e.species] || 1) - 1);
     this.feed(eater, e.n || 0, e.x);
+    e.n = 0;
     eater.energy = Math.min(1, eater.energy + 0.35);
   }
 
@@ -483,6 +499,7 @@ export class World {
       if (!this.unlocked(kind) || kind === 'mindbloom' || this.taskOnly) continue;
       if (this.count(kind) + this.countEggs(kind) > ECO.bankFloor) continue;
       if (!chance(1 / (1.5 * HR), dt)) continue;
+      if (this.fauna.length + this.eggs.length >= MAX_FAUNA) continue;
       const { genome, n } = this.bankTake(kind);
       const c = this.spawn(kind, { genome, n, age: 0, energy: 0.6, origin: 'Woke from the seed bank' });
       this.stats.births++;
@@ -498,11 +515,12 @@ export class World {
     this.hunting = 0;
     for (const c of this.fauna) {
       if (c.dead || !PREDATORS.includes(c.kind)) continue;
+      if (c._held || c._fall) { if (c.hunt) this.endHunt(c); continue; }
       if (c.digest > 0 && !c.hunt) { c.digest -= dt; continue; }
       if (c.hunt) {
         this.hunting++;
         const prey = c.hunt.prey;
-        if (prey.dead || prey.gone) { this.endHunt(c); continue; }
+        if (prey.dead || prey.gone || prey._held) { this.endHunt(c); continue; }
         if (this.t > c.hunt.until) this.predate(c, prey);
         continue;
       }
@@ -611,7 +629,7 @@ export class World {
     if (this.count(preyKind) <= ECO.hunt[pred.kind].refuge) return null;
     let prey = null, bd = Infinity;
     for (const c of this.fauna) {
-      if (c.kind !== preyKind || c.dead || c.lured || c._doomed) continue;
+      if (c.kind !== preyKind || c.dead || c.lured || c._doomed || c._held) continue;
       const d = Math.abs(c.x - pred.x);
       if (d < bd) { bd = d; prey = c; }
     }
@@ -653,11 +671,8 @@ export class World {
         if (p.digest <= 0) { p.closed = 0; p.caught = 0; }
         continue;
       }
-      if (p.growth < 0.8 || p.wither > 0) continue;
-      if (p.lured) {
-        if (p.lured.dead || this.t > p.lureUntil) { if (p.lured.lured === p) p.lured.lured = null; p.lured = null; }
-        else continue;
-      }
+      if (p.lured && (p.lured.dead || this.t > p.lureUntil || p.wither > 0)) { if (p.lured.lured === p) p.lured.lured = null; p.lured = null; }
+      if (p.growth < 0.8 || p.wither > 0 || p.lured) continue;
       const preyKind = p.kind === 'snaplure' ? 'petalmoth' : 'bellwisp';
       const h = ECO.hunt[p.kind];
       if (this.count(preyKind) <= h.refuge) continue;
@@ -729,7 +744,7 @@ export class World {
       dens[l][b]++;
       if (c.inf) inf[l][b]++;
     }
-    let outbreak = null;
+    let outbreak = null, blightCase = null;
     for (const c of this.fauna) {
       if (c.dead || c.inf || c.kind === 'mindbloom') continue;
       const b = this.bucketOf(c.x), l = LAYER[c.kind];
@@ -738,8 +753,8 @@ export class World {
       for (let k = b - 1; k <= b + 1; k++) { if (k < 0 || k >= NB) continue; d += dens[l][k]; i += inf[l][k]; if (l === 0) m += this.mush[k]; bl += Math.max(0, this.blight[k] - 0.65); }
       // a blighted weed's spores infect even the uncrowded
       if (bl > 0 && c.kind !== 'mindbloom' && chance(bl * (RESIST[c.kind] || 1) / (5 * HR), dt)) {
-        c.inf = 1; c._infLife = rr(F.lifeMin, F.lifeMax); outbreak = c;
-        this._blightCase = true;
+        c.inf = 1; c._infLife = rr(F.lifeMin, F.lifeMax);
+        blightCase = c;
         continue;
       }
       const crowd = Math.max(0, d - F.crowd);
@@ -753,10 +768,10 @@ export class World {
         outbreak = c;
       }
     }
-    if (outbreak && this.t - (this._lastOutbreakLog || -1e9) > 1800) {
+    if ((outbreak || blightCase) && this.t - (this._lastOutbreakLog || -1e9) > 1800) {
       this._lastOutbreakLog = this.t;
-      if (this._blightCase) { this._blightCase = false; this.log(`${outbreak.name} the ${SPECIES[outbreak.kind].name.toLowerCase()} breathed in blight spores from a neglected task's weeds and caught the gloomcap fungus.`, 'fungus'); return; }
-      this.log(`${outbreak.name} the ${SPECIES[outbreak.kind].name.toLowerCase()} has caught the gloomcap fungus. Crowded creatures pass it to each other.`, 'fungus');
+      if (outbreak) this.log(`${outbreak.name} the ${SPECIES[outbreak.kind].name.toLowerCase()} has caught the gloomcap fungus. Crowded creatures pass it to each other.`, 'fungus');
+      else this.log(`${blightCase.name} the ${SPECIES[blightCase.kind].name.toLowerCase()} breathed in blight spores from a neglected task's weeds and caught the gloomcap fungus.`, 'fungus');
     }
   }
 
@@ -777,6 +792,9 @@ export class World {
       for (let i = 0; i < 7; i++) plant('grass', (i + 0.5 + (r() - 0.5) * 0.8) / 7 * W, 0.7);
       this.stats.created = Date.now();
       this.log('A new glass, bare but for some grass. Finish a task and the first life will come.', 'milestone');
+      this.stats.n0 = this.totalN();
+      this.stats.nIn = 0;
+      this.rebuildIndex();
       return;
     }
     kinds.forEach((k, i) => plant(k, (i + 0.5 + (r() - 0.5) * 0.8) / kinds.length * W, 0.6 + r() * 0.4));
@@ -959,7 +977,7 @@ export class World {
       const gone = this.stats.goneAt[kind] ?? (this.stats.goneAt[kind] = this.simTime);
       const wait = kind === 'mindbloom' ? 86400 : ECO.immigrateAfter;
       if (this.simTime - gone < wait * 1000) continue;
-      if (!chance(1 / HR, dt)) continue;
+      if (!chance(1 / HR, dt) || this.fauna.length + this.eggs.length >= MAX_FAUNA) continue;
       this.arrive(kind, `A lone ${SPECIES[kind].name.toLowerCase()} named {name} found its way in from the flats.`);
     }
   }
@@ -1037,7 +1055,7 @@ export class World {
     // put things back where they belong
     for (const c of this.fauna) {
       c.hunt = null; c.lured = null; c._doomed = null;
-      if (c.kind === 'scuttler' || c.kind === 'stiltstrider' || c.kind === 'hookjaw') { if (this.inPond(c.x, 4 * this.U)) c.x = this.pond.x0 - 8 * this.U; c.state = 'idle'; c.timer = 0; c.y = this.groundY(c.x); }
+      if (World.GROUND.includes(c.kind)) { if (this.inPond(c.x, 4 * this.U)) c.x = this.bankX(c.x); c.state = 'idle'; c.timer = 0; c.depth = 0; c.y = this.groundY(c.x); }
     }
     for (const p of this.traps) p.lured = null;
     return { seconds, births: this.stats.births - before.births, deaths: this.stats.deaths - before.deaths, kills: this.act.kills - before.kills };
@@ -1088,6 +1106,8 @@ export class World {
     const pool = FAUNA_KINDS.filter((k) => this.unlocked(k) && k !== 'mindbloom' && (!PREDATORS.includes(k) || (this.taskOnly && prey >= 6)));
     let kind = newly.find((k) => CREATURES[k] && k !== 'mindbloom');
     if (newly.includes('mindbloom')) kind = 'mindbloom';
+    // a task-only glass gets its mindbloom back from a finished task
+    else if (this.taskOnly && this.unlocked('mindbloom') && !this.count('mindbloom') && Math.random() < 0.5) kind = 'mindbloom';
     if (!kind) {
       let best = null, bs = -Infinity;
       for (const k of pool) {
@@ -1097,6 +1117,7 @@ export class World {
       }
       kind = best;
     }
+    if (this.fauna.length + this.eggs.length >= MAX_FAUNA) kind = null; // the glass is full
     this.inject(x, 0.35 + Math.min(task.steps?.length || 0, 10) * 0.03);
     let creature = null;
     if (kind) {
@@ -1128,6 +1149,8 @@ export class World {
       // a finished task also greens its patch, more for a bigger job
       const steps = Math.min(task.steps?.length || 0, 9);
       for (let i = 0; i < 2 + Math.floor(steps / 3); i++) this.plantFromTask(x + rr(-14, 14) * this.U, 0.25);
+      const fc = this.countFlora();
+      for (const k of ['snaplure', 'dewveil']) if (this.unlocked(k) && !fc[k] && Math.random() < 0.35) { this.plantFromTask(k === 'dewveil' ? rr(0.4, 0.75) * this.W : x + rr(-10, 10) * this.U, 0.5, k); break; }
       if (this.unlocked('gloamwhale') && !this.visitors.length && !this.offline && Math.random() < 0.2) {
         this.visitors.push(new Gloamwhale(this));
         this.discover('gloamwhale');
@@ -1197,7 +1220,7 @@ export class World {
     c.vx = 0; c.vy = 0;
     if (World.GROUND.includes(c.kind)) {
       // land on the bank, never in the pond
-      if (this.inPond(c.x, 4 * U)) c.x = c.x < (P0.x0 + P0.x1) / 2 ? P0.x0 - 6 * U : P0.x1 + 6 * U;
+      if (this.inPond(c.x, 4 * U)) c.x = this.bankX(c.x);
       c.tx = c.x;
       if (c.y < this.groundY(c.x) - U) { c._fall = true; c._vy = 0; }
       else c.y = this.groundY(c.x);
@@ -1311,8 +1334,8 @@ export class World {
       seed: this.seed,
       W: this.W, H: this.H,
       flora: this.flora.map((p) => p.serialize(this)),
-      fauna: this.fauna.map((c) => c.serialize(this)),
-      eggs: this.eggs.map((e) => e.serialize(this)),
+      fauna: this.fauna.filter((c) => !c.dead).map((c) => c.serialize(this)),
+      eggs: this.eggs.filter((e) => !e.gone).map((e) => e.serialize(this)),
       items: this.items.map((i) => ({ id: i.id, type: i.type, x: i.x / this.W, y: i.y / this.H, vy: 0, color: i.color, n: i.n, food: i.food, age: i.age, grounded: i.grounded, inWater: i.inWater })),
       soil: Array.from(this.soil, r4),
       bank: this.bank,
@@ -1334,8 +1357,10 @@ export class World {
       lookup[c.id] = c;
       return c;
     });
-    this.eggs = (d.eggs || []).map((o) => new Egg({ ...o, x: o.x * W, y: o.y * H }));
-    this.items = (d.items || []).map((i) => ({ ...i, x: i.x * W, y: i.y * H }));
+    this.eggs = (d.eggs || []).map((o) => { bumpUid(o.id); return new Egg({ ...o, x: o.x * W, y: o.y * H }); });
+    this.items = (d.items || []).map((i) => { bumpUid(i.id); return { ...i, x: i.x * W, y: i.y * H }; });
+    // ids of the dead live on in the family tree: never hand them out again
+    for (const r of d.lineage || []) bumpUid(r.id);
     if (d.soil?.length === SOIL_N) this.soil = Float64Array.from(d.soil);
     this.stats = { ...this.stats, ...d.stats };
     this.bank = d.bank || {};
@@ -1344,7 +1369,7 @@ export class World {
     for (const r of d.lineage || []) this.lineage[r.id] = r;
     if (v < 2) this.migrate1to2();
     this.adoptLineage();
-    for (const c of this.fauna) if (c.kind === 'scuttler' || c.kind === 'stiltstrider' || c.kind === 'hookjaw') c.y = this.groundY(c.x);
+    for (const c of this.fauna) if (World.GROUND.includes(c.kind)) { if (this.inPond(c.x, 4 * this.U)) c.x = this.bankX(c.x); c.depth = 0; c.y = this.groundY(c.x); }
     // re-baseline the ledger: saving rounds the soil a little
     this.stats.n0 = this.totalN() - (this.stats.nIn || 0);
     this.rebuildIndex();

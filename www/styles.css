@@ -219,7 +219,7 @@ input[type=range] { width: 100%; accent-color: var(--sea); }
 #inspector {
   position: fixed; top: calc(12px + var(--sat)); left: 50%; transform: translateX(-50%);
   width: min(380px, calc(100vw - 24px));
-  display: grid; grid-template-columns: 76px 1fr; gap: 12px; padding: 12px 14px;
+  display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 12px; padding: 12px 14px;
   background: var(--panel); border: 1px solid var(--panel-line); border-radius: 18px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
   animation: drop-in 0.3s cubic-bezier(.2,.8,.2,1);
@@ -413,3 +413,7 @@ body.idle #task-card { opacity: 1; pointer-events: auto; }
 
 /* carrying a creature: get the card out of the way */
 body.carrying #inspector { opacity: 0.2; pointer-events: none; transition: opacity 0.2s; }
+
+/* with a creature or task card open at the top, toasts rise from above the dock instead */
+body.card-open #toasts { top: auto; bottom: calc(150px + var(--sab)); flex-direction: column-reverse; }
+.sheet h2:focus { outline: none; }

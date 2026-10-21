@@ -39,6 +39,8 @@ export class Creature {
     if (g.gl == null) g.gl = g.glow || g.eye ? rr(0.2, 0.8) : 0;
     // temperament (see TRAITS)
     for (const t of TRAITS) if (g[t.k] == null) g[t.k] = rr(0.2, 0.8);
+    // body-part counts are whole numbers (older saves let them drift)
+    for (const k of ['stalks', 'wings', 'legs', 'bands', 'tendrils', 'spots', 'frills', 'stripes']) if (typeof g[k] === 'number') g[k] = Math.round(g[k]);
     this.pid ??= null;
     if (!this.life) this.life = rr(C.lifeRange[0], C.lifeRange[1]) * (1.2 - 0.4 * g.fec);
     this.inf ||= 0;
@@ -83,7 +85,7 @@ export class Creature {
     const g = { ...this.genome };
     for (const k in g) {
       const v = g[k];
-      if (typeof v === 'number' && k !== 'seed') g[k] = v * (1 + (r() * 2 - 1) * 0.05);
+      if (typeof v === 'number' && k !== 'seed' && !Number.isInteger(v)) g[k] = v * (1 + (r() * 2 - 1) * 0.05);
       else if (typeof v === 'string' && v[0] === '#' && !k.startsWith('glow')) g[k] = jitterHex(v, 6, r);
     }
     g.seed = Math.floor(r() * 1e9);
@@ -607,7 +609,7 @@ export class Bellwisp extends Creature {
 
   burst(world) {
     const U = world.U;
-    const n = Math.min(3, Math.floor(this.n / this.nStruct));
+    const n = world.taskOnly ? 0 : Math.min(3, Math.floor(this.n / this.nStruct)); // no spores without automatic spawning
     if (!world.offline) {
       world.particles.burst(this.x, this.y, 22, { type: 'spark', color: this.genome.c1, glow: this.genome.glow, speed: 14 * U, life: 2.2, size: 2, g: -4, drag: 1.4 });
       world.particles.emit({ type: 'ring', x: this.x, y: this.y, size: 2 * U, grow: 14 * U, life: 1.4, color: this.genome.c2 });
@@ -1267,7 +1269,7 @@ export class Hookjaw extends Predator {
     let best = null, bs = Infinity;
     if (world.count('scuttler') > ref) {
       for (const c of world.fauna) {
-        if (c.kind !== 'scuttler' || c.dead || c._doomed || c.depth > 0.5) continue;
+        if (c.kind !== 'scuttler' || c.dead || c._doomed || c._held || c.depth > 0.5) continue;
         const d = Math.abs(c.x - this.x);
         if (d > 90 * U) continue;
         const score = c.energy + (c.inf ? -0.5 : 0) + (c.stage !== 'adult' ? -0.3 : 0) + d / (150 * U);
@@ -1363,7 +1365,7 @@ export class Lancewing extends Predator {
     if (world.count('petalmoth') <= ECO.hunt.lancewing.refuge) return null;
     let best = null, bs = -Infinity;
     for (const c of world.fauna) {
-      if (c.kind !== 'petalmoth' || c.dead || c._doomed || c.lured) continue;
+      if (c.kind !== 'petalmoth' || c.dead || c._doomed || c.lured || c._held) continue;
       const sc = world.huntMult(this, c) - Math.abs(c.x - this.x) / (world.W * 2);
       if (sc > bs) { bs = sc; best = c; }
     }
@@ -1442,7 +1444,7 @@ export class Mireeel extends Predator {
     if (best) return best;
     if (world.count('ribbonfin') <= ECO.hunt.mireeel.refuge) return null;
     for (const c of world.fauna) {
-      if (c.kind !== 'ribbonfin' || c.dead || c._doomed || c.adult) continue;
+      if (c.kind !== 'ribbonfin' || c.dead || c._doomed || c.adult || c._held) continue;
       const d = Math.abs(c.x - this.x);
       if (d < bd) { bd = d; best = c; }
     }

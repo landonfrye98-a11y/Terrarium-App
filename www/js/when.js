@@ -16,26 +16,34 @@ const WEEKDAY = /^(sun|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat)(day|sday|ne
 
 export const endOfDay = (t) => { const d = new Date(t); d.setHours(23, 59, 59, 999); return d.getTime(); };
 export const startOfDay = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
-const addDays = (t, n) => { const d = new Date(t); d.setDate(d.getDate() + n); return d.getTime(); };
+// calendar days, safe across daylight-saving changes
+export const addDays = (t, n) => { const d = new Date(t); d.setDate(d.getDate() + n); return d.getTime(); };
 const atTime = (day, h, m) => { const d = new Date(day); d.setHours(h, m, 0, 0); return d.getTime(); };
 
 // trailing time: returns { h, m, rest } or null
 function takeTime(s) {
-  let m = /\s+(?:at\s+|@\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)$/i.exec(s);
+  let m = /\s+(?:at\s+|@\s*)?(\d{1,2})(?::(\d{2}))?(?:\s*(am|pm)|\s+(a|p))$/i.exec(s);
+  if (m) m[3] = m[3] || m[4];
   if (m) {
     let h = +m[1] % 12;
     if (m[3][0].toLowerCase() === 'p') h += 12;
     if (+m[1] > 12 || +(m[2] || 0) > 59) return null;
-    return { h, m: +(m[2] || 0), rest: s.slice(0, m.index) };
+    return { h, m: +(m[2] || 0), rest: s.slice(0, m.index), bare: false };
   }
-  m = /\s+(?:at\s+|@\s*)(\d{1,2})(?::(\d{2}))?$/i.exec(s) || /\s+(\d{1,2}):(\d{2})$/.exec(s);
+  m = /\s+(?:at\s+|@\s*)(\d{1,2})(?::(\d{2}))?$/i.exec(s);
+  if (!m) {
+    // a bare 10:30, but not a reference like "John 3:16"
+    m = /(\S*)\s+(\d{1,2}):(\d{2})$/.exec(s);
+    if (m && /^[A-Z]/.test(m[1])) m = null;
+    if (m) m = Object.assign([m[0], m[2], m[3]], { index: m.index + m[1].length });
+  }
   if (m) {
     let h = +m[1];
     const mm = +(m[2] || 0);
     if (h > 23 || mm > 59) return null;
-    // "at 3" means the afternoon; "at 9" the morning
-    if (!m[2] && h >= 1 && h <= 6) h += 12;
-    return { h, m: mm, rest: s.slice(0, m.index) };
+    // "at 3" and "3:30" mean the afternoon; "at 9" the morning
+    if (h >= 1 && h <= 6) h += 12;
+    return { h, m: mm, rest: s.slice(0, m.index), bare: true };
   }
   m = /\s+(?:at\s+)?(noon|midday|midnight)$/i.exec(s);
   if (m) return { h: m[1].toLowerCase() === 'midnight' ? 23 : 12, m: m[1].toLowerCase() === 'midnight' ? 59 : 0, rest: s.slice(0, m.index) };
@@ -46,16 +54,18 @@ function takeTime(s) {
 function takeDate(s, now) {
   const today = startOfDay(now);
   const pre = '(?:\\s+(?:by|on|due|for|this|before))?';
-  let m = new RegExp(`${pre}\\s+(today|tonight|tomorrow|tmrw|tmr|tomorow)$`, 'i').exec(s);
+  let m = new RegExp(`(?:\\s+(?:by|due|for|before))?\\s+(today|tonight|tomorrow|tmrw|tmr|tomorow)$`, 'i').exec(s);
   if (m) {
     const w = m[1].toLowerCase();
     if (w === 'today') return { day: today, rest: s.slice(0, m.index) };
-    if (w === 'tonight') return { day: today, time: { h: 20, m: 0 }, rest: s.slice(0, m.index) };
+    if (w === 'tonight') return { day: today, time: { h: 20, m: 0 }, evening: true, rest: s.slice(0, m.index) };
     return { day: addDays(today, 1), rest: s.slice(0, m.index) };
   }
-  m = new RegExp(`${pre}\\s+(next\\s+)?([a-z]+)$`, 'i').exec(s);
-  // (an all-caps word is an acronym: "study for the SAT")
-  if (m && WEEKDAY.test(m[2].toLowerCase()) && !(m[2].length > 1 && m[2] === m[2].toUpperCase())) {
+  m = new RegExp(`(\\s+(?:by|on|due|for|this|before))?\\s+(next\\s+)?([a-z]+)$`, 'i').exec(s);
+  if (m) m = Object.assign([m[0], m[2], m[3]], { index: m.index, lead: !!(m[1] || m[2]) });
+  // (an all-caps word is an acronym: "study for the SAT"; "sun", "sat" and
+  // "wed" are ordinary words unless something says they're a day)
+  if (m && WEEKDAY.test(m[2].toLowerCase()) && !(m[2].length > 1 && m[2] === m[2].toUpperCase()) && (m.lead || !/^(sun|sat|wed)$/i.test(m[2]))) {
     const want = DAYS.indexOf(m[2].toLowerCase().slice(0, 3));
     const cur = new Date(now).getDay();
     let ahead = (want - cur + 7) % 7;
@@ -68,7 +78,7 @@ function takeDate(s, now) {
   if (m) return { day: addDays(today, 7), rest: s.slice(0, m.index) };
   m = /\s+in\s+(\d+|an?|one|two|three|four|five|six|seven|ten)\s+(days?|weeks?|hours?|hrs?|minutes?|mins?)$/i.exec(s);
   if (m) {
-    const n = NUM[m[1].toLowerCase()] ?? +m[1];
+    const n = Math.min(NUM[m[1].toLowerCase()] ?? +m[1], 3650);
     const u = m[2].toLowerCase();
     if (u[0] === 'd') return { day: addDays(today, n), rest: s.slice(0, m.index) };
     if (u[0] === 'w') return { day: addDays(today, 7 * n), rest: s.slice(0, m.index) };
@@ -81,19 +91,22 @@ function takeDate(s, now) {
   if (m) {
     const a = /\d/.test(m[1]) ? [m[2], m[1]] : [m[1], m[2]];
     const mo = MONTHS.indexOf(a[0].toLowerCase().slice(0, 3));
-    if (mo >= 0 && MONTH_NAMES[mo].startsWith(a[0].toLowerCase().replace(/^sept$/, 'sep')) && +a[1] >= 1 && +a[1] <= 31) return { day: dateAhead(now, mo, +a[1]), rest: s.slice(0, m.index) };
+    const day = mo >= 0 && MONTH_NAMES[mo].startsWith(a[0].toLowerCase().replace(/^sept$/, 'sep')) && +a[1] >= 1 && +a[1] <= 31 ? dateAhead(now, mo, +a[1]) : null;
+    if (day != null) return { day, rest: s.slice(0, m.index) };
   }
   m = new RegExp(`${pre}\\s+(\\d{1,2})/(\\d{1,2})$`).exec(s);
-  if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31) return { day: dateAhead(now, +m[1] - 1, +m[2]), rest: s.slice(0, m.index) };
+  const md = m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31 ? dateAhead(now, +m[1] - 1, +m[2]) : null;
+  if (md != null) return { day: md, rest: s.slice(0, m.index) };
   return null;
 }
 
 // the next time this month/day comes around (this year unless already past)
 function dateAhead(now, mo, d) {
   const n = new Date(now);
-  let t = new Date(n.getFullYear(), mo, d).getTime();
-  if (t < startOfDay(now)) t = new Date(n.getFullYear() + 1, mo, d).getTime();
-  return t;
+  let y = n.getFullYear();
+  if (new Date(y, mo, d).getTime() < startOfDay(now)) y++;
+  const t = new Date(y, mo, d);
+  return t.getMonth() === mo ? t.getTime() : null; // no Feb 30th
 }
 
 // "clean house sunday 3pm" -> { title: 'clean house', due, allDay: false }
@@ -102,10 +115,19 @@ export function parseDue(text, now = Date.now()) {
   let day = null, time = null;
   for (let pass = 0; pass < 2; pass++) {
     if (!time) { const t = takeTime(s); if (t && t.rest.trim()) { time = t; s = t.rest; continue; } }
-    if (day == null) { const d = takeDate(s, now); if (d && d.rest.trim()) { day = d.day; if (d.time && !time) time = d.time; s = d.rest; continue; } }
+    if (day == null) {
+      const d = takeDate(s, now);
+      if (d && d.rest.trim() && Number.isFinite(d.day)) {
+        day = d.day;
+        if (d.time && !time) time = d.time;
+        // "tonight at 8" is eight in the evening
+        else if (d.evening && time && time.bare !== false && time.h < 12) time = { ...time, h: time.h + 12 };
+        s = d.rest; continue;
+      }
+    }
     break;
   }
-  const title = s.trim().replace(/\s+(by|on|due|at)$/i, '');
+  const title = s.trim().replace(/\s+(by|due)$/i, '');
   if (day == null && !time) return { title: text.trim(), due: null, allDay: false };
   if (day == null) {
     // a bare time is today's, or tomorrow's if it has already gone by
@@ -115,7 +137,7 @@ export function parseDue(text, now = Date.now()) {
   return time ? { title, due: atTime(day, time.h, time.m), allDay: false } : { title, due: endOfDay(day), allDay: true };
 }
 
-const BULLET = /^\s*(?:[-*•·◦▪]|\d+[.)]|\[\s?[xX ]?\s?\])\s*/;
+const BULLET = /^\s*(?:[-*•·◦▪]|\d+[.)](?=\s)|\[\s?[xX ]?\s?\])\s*/;
 
 // a whole entry: title, due date and any steps
 export function parseEntry(text, now = Date.now()) {
@@ -124,7 +146,9 @@ export function parseEntry(text, now = Date.now()) {
   let head = lines[0];
   let steps = lines.slice(1);
   // "Clean house sun: trash, dishes, vacuum"
-  const c = head.indexOf(':');
+  // (the last colon that isn't inside a time like 10:30)
+  let c = -1;
+  for (const mm of head.matchAll(/:(?!\d)/g)) c = mm.index;
   if (c > 0 && !steps.length) {
     const parts = head.slice(c + 1).split(/\s*[,;]\s*/).map((x) => x.trim()).filter(Boolean);
     if (parts.length >= 2) { steps = parts; head = head.slice(0, c); }
