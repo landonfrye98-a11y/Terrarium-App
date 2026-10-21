@@ -112,6 +112,18 @@
     </div>
     <div class="setting"><label for="s-dim">Dim <small id="dim-val"></small></label><input type="range" id="s-dim" data-key="dim" min="0" max="0.7" step="0.05"></div>
     <div class="setting row"><label for="s-autohide">Fade controls when idle</label><input type="checkbox" id="s-autohide" data-key="autohide" class="switch"></div>
+    <h3>Tasks</h3>
+    <div class="setting row"><label for="s-remind">Due-date reminders</label><input type="checkbox" id="s-remind" data-key="reminders" class="switch"></div>
+    <div class="setting">
+      <label>Remind me</label>
+      <div class="seg" data-key="remindLead">
+        <button data-v="ontime">When due</button><button data-v="15">15 min early</button><button data-v="60">1 hour early</button>
+      </div>
+      <p class="hint" id="remind-hint"></p>
+    </div>
+    <div class="setting row"><label for="s-taskonly">Life comes only from tasks</label><input type="checkbox" id="s-taskonly" data-key="taskOnly" class="switch"></div>
+    <p class="hint">When this is on, nothing sprouts, breeds or wanders in on its own. Every new creature and plant comes from a task you finish, and finished steps sprout small plants. Lives run longer, but a glass you don't tend will slowly empty. Neglected tasks still grow weeds.</p>
+    <h3>Sound</h3>
     <div class="setting row"><label for="s-sound">Ambient sound</label><input type="checkbox" id="s-sound" data-key="sound" class="switch"></div>
     <div class="setting row"><label for="s-tap">Creature calls when tapped</label><input type="checkbox" id="s-tap" data-key="tapSounds" class="switch"></div>
     <div class="setting"><label for="s-vol">Volume</label><input type="range" id="s-vol" data-key="volume" min="0" max="1" step="0.05"></div>

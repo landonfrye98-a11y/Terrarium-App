@@ -64,6 +64,10 @@ function runOffline(seed, done) {
   w.offline = true;
   // --blight=0.9 plays a neglected task's weeds over a third of the glass
   if (args.blight) for (let b = 2; b < 8; b++) w.blight[b] = +args.blight;
+  // --taskonly=6: life only from tasks, six finished between 9 and 7 each day
+  const TPD = args.taskonly != null ? +args.taskonly : null;
+  if (TPD != null) w.taskOnly = true;
+  let taskN = 0;
   const ctx = `seed=${seed} done=${done}`;
   const series = [];
   const gone = {};
@@ -80,6 +84,16 @@ function runOffline(seed, done) {
       w.tick(step);
       tickMs += performance.now() - t0; ticks++;
     }
+    if (TPD) {
+      const hod = (h + 7) % 24; // the harness clock starts at 07:00
+      if (hod >= 9 && hod < 19) {
+        const k = Math.floor((hod - 8) * TPD / 10) - Math.floor((hod - 9) * TPD / 10);
+        for (let i = 0; i < k; i++) {
+          const x = (0.1 + Math.random() * 0.8) * w.W;
+          w.bloomTask({ title: `task ${seed}-${taskN++}`, steps: taskN % 3 ? [] : [1, 2, 3, 4] }, x, w.groundY(x));
+        }
+      }
+    }
     check(w, `${ctx} h=${h}`);
     stats.kills += w.act.kills; w.act.kills = 0;
     stats.infections += w.fauna.filter((c) => c.inf).length;
@@ -91,6 +105,7 @@ function runOffline(seed, done) {
       gone[k] = empty ? (gone[k] || 0) + 1 : 0;
       stats.maxGone[k] = Math.max(stats.maxGone[k] || 0, gone[k]);
       const banked = w.bank[k]?.count > 0;
+      if (TPD != null) continue; // nothing comes back on its own in a task-only glass
       if (empty && banked && gone[k] > 12) fail(`${ctx} h=${h}`, `${k} extinct ${gone[k]}h with a seed bank of ${w.bank[k].count}`);
       if (empty && gone[k] > 54) fail(`${ctx} h=${h}`, `${k} extinct ${gone[k]}h and nobody arrived`);
     }

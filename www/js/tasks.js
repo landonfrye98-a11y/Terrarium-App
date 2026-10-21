@@ -196,6 +196,8 @@ export class TaskGarden {
       const p = this.budPos(t, t.steps.indexOf(st));
       w.particles.burst(p.x, p.y, 10, { type: 'spark', color: t.c1, glow: t.glow, speed: 9 * U, life: 1.1, g: -2 * U });
       w.inject(p.x, 0.01);
+      // in a task-only glass, every finished step sprouts something small
+      if (w.taskOnly) w.plantFromTask(this.podPos(t, _pos).x + (Math.random() - 0.5) * 16 * U, 0.15, Math.random() < 0.6 ? 'grass' : undefined);
     }
     this.changed();
     return st.done && t.steps.every((x) => x.done) ? 'all' : st.done ? 'done' : 'undone';

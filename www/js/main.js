@@ -14,6 +14,7 @@ import { TaskGarden, dayKey } from './tasks.js';
 import { Soundscape } from './audio.js';
 import { UI } from './ui.js';
 import { SPECIES } from './species.js';
+import { Reminders } from './remind.js';
 import { setArt } from './fauna.js';
 import { setFloraArt } from './flora.js';
 import { SkyFx } from './skyfx.js';
@@ -33,6 +34,7 @@ const PERF = {
 const DEFAULTS = {
   perf: 'balanced', awake: true, clockMode: 'analog', h24: false, showSeconds: true, smoothSeconds: true,
   labels: true, sky: 'real', dim: 0, autohide: true, sound: false, tapSounds: true, volume: 0.6, immersive: true, onboarded: false,
+  reminders: false, remindLead: 'ontime', taskOnly: false,
 };
 const MAX_ZOOM = 4;
 const NO_CAM = { z: 1, x: 0, y: 0 };
@@ -78,6 +80,7 @@ class App {
     this.world = new World(save?.world?.seed);
     if (params.has('hour')) this.world.forceHour = parseFloat(params.get('hour'));
     this.world.skyMode = this.settings.sky;
+    this.world.taskOnly = !!this.settings.taskOnly;
     this.measure();
     this.world.layout(this.W, this.H, this.topInset);
     this.garden = new TaskGarden(this.world, save?.garden);
@@ -90,6 +93,7 @@ class App {
       } catch (e) {
         console.error('Could not restore the glass, starting fresh', e);
         this.world = new World();
+        this.world.taskOnly = !!this.settings.taskOnly;
         this.world.layout(this.W, this.H, this.topInset);
         this.garden = new TaskGarden(this.world, null);
         this.world.genesis();
@@ -111,7 +115,10 @@ class App {
     this.bindWorldEvents();
     this.bindInput();
     this.bindLifecycle();
+    this.reminders = new Reminders(this, plugin('LocalNotifications'));
+    this.garden.onChange(() => this.reminders.sync(this.garden.tasks));
     this.applyAll();
+    this.reminders.catchUp(this.garden.tasks, save?.savedAt);
     this.splash(away);
     this.start();
     setInterval(() => this.slowTick(), 1000);
@@ -725,6 +732,7 @@ class App {
   wakeUp() {
     if (this.running) return;
     const gone = this.hiddenAt ? (Date.now() - this.hiddenAt) / 1000 : 0;
+    this.reminders.catchUp(this.garden.tasks, this.hiddenAt);
     this.hiddenAt = 0;
     if (gone > 20) {
       this.garden.updateWeeds();
@@ -771,6 +779,17 @@ class App {
       case 'sound': if (!boot) this.audio.setOn(s.sound); else if (s.sound) this.pendingSound = true; break;
       case 'volume': this.audio.setVolume(s.volume); break;
       case 'autohide': this.ui.wake(); break;
+      case 'reminders':
+        if (s.reminders && !boot) {
+          this.reminders.permit().then((ok) => {
+            if (!ok) { this.setSetting('reminders', false); this.ui.renderSettings(); this.ui.toast('Notifications are blocked for Glasswild. Allow them in your phone’s settings to get reminders.', false, 6000); return; }
+            this.reminders.sync(this.garden.tasks);
+            this.ui.toast(this.native ? 'Reminders are on. You’ll get one when a task is due.' : 'Reminders are on. In the browser they arrive while Glasswild is open; the Android app can remind you when it’s closed.', false, 6000);
+          });
+        } else this.reminders.sync(this.garden.tasks);
+        break;
+      case 'remindLead': this.reminders.sync(this.garden.tasks); break;
+      case 'taskOnly': this.world.taskOnly = !!s.taskOnly; if (!boot) this.ui.toast(s.taskOnly ? 'Nothing will grow or be born on its own now. Every new life comes from a finished task.' : 'The glass will grow and breed on its own again.', false, 6000); break;
       case 'immersive': {
         const SB = plugin('StatusBar');
         if (SB) { (s.immersive ? SB.hide() : SB.show()).catch(() => {}); SB.setOverlaysWebView?.({ overlay: true }).catch(() => {}); }

@@ -21,6 +21,9 @@ const HR = 3600;
 const SAVE_V = 2;
 const MAX_FAUNA = 36; // drawing budget for the whole glass
 const ORDER_COOLDOWN = 20 * 60 * 1000; // between hunts you command
+// "life comes only from tasks": nothing sprouts, breeds or arrives on its own,
+// and what your tasks bring lives this much longer
+const TASK_LIFE = 2.5, TASK_PLANT_LIFE = 2;
 const LINEAGE_MAX = 320; // family records kept
 const LINEAGE_DEPTH = 8; // generations of ancestry kept behind the living
 const LINEAGE_FADE = 36 * HR * 1000; // how long a dead branch lingers
@@ -211,6 +214,7 @@ export class World {
   // Breeding is limited by food (nutrient for a child's body) and gets
   // steeply harder only as a species nears the performance ceiling.
   canBreed(c) {
+    if (this.taskOnly) return false;
     if (!c.adult || c.inf || c.energy < 0.7 || !this.unlocked(c.kind)) return false;
     if (c.n < 2 * this.nStruct(c.kind, c.genome)) return false;
     if (this.fauna.length + this.eggs.length >= MAX_FAUNA) return false;
@@ -240,6 +244,7 @@ export class World {
   spawn(kind, o = {}) {
     const C = CREATURES[kind];
     const c = new C(o);
+    if (this.taskOnly && !o.life) c.life *= TASK_LIFE;
     if (!o.x) this.placeNew(c);
     if (c.n == null) c.n = this.nStruct(kind, c.genome);
     this.fauna.push(c);
@@ -430,6 +435,7 @@ export class World {
 
   // puffcaps release bellwisp spores, but only from the bellwisp seed bank
   trySporeFromPuffcap(p) {
+    if (this.taskOnly) return;
     const b = this.bank.bellwisp;
     if (!b || b.count < 1 || !this.room('bellwisp')) return;
     const { genome, n } = this.bankTake('bellwisp');
@@ -474,7 +480,7 @@ export class World {
       const decay = b.n * (1 - Math.pow(0.5, dt / ECO.bankHalfLife));
       if (decay > 0) { b.n -= decay; this.depositN(rr(0, this.W), decay); }
       if (b.count > 0 && b.n < 1e-6) { delete this.bank[kind]; continue; }
-      if (!this.unlocked(kind) || kind === 'mindbloom') continue;
+      if (!this.unlocked(kind) || kind === 'mindbloom' || this.taskOnly) continue;
       if (this.count(kind) + this.countEggs(kind) > ECO.bankFloor) continue;
       if (!chance(1 / (1.5 * HR), dt)) continue;
       const { genome, n } = this.bankTake(kind);
@@ -696,7 +702,7 @@ export class World {
       const kind = p.kind;
       const maxN = kind === 'snaplure' ? 4 : 2;
       if (p.age - (p.lastMeal ?? 0) > 30 * HR && p.life > p.age) { p.life = p.age; this.log(`A starving ${SPECIES[kind].name.toLowerCase()} has begun to wither.`, 'death'); }
-      if (p.n >= 2 * ECO.nPlant[kind] && (c[kind] || 0) < maxN && this.flora.length < this.floraCap()) {
+      if (!this.taskOnly && p.n >= 2 * ECO.nPlant[kind] && (c[kind] || 0) < maxN && this.flora.length < this.floraCap()) {
         const nb = ECO.nPlant[kind] * 0.5;
         p.n -= nb;
         let x = clamp(p.x + rr(-25, 25) * this.U, 4 * this.U, this.W - 4 * this.U);
@@ -767,6 +773,12 @@ export class World {
       this.flora.push(p);
     };
     const kinds = ['fanfern', 'bulbstalk', 'lanternlily', 'fanfern', 'grass', 'puffcap', 'lanternlily', 'bulbstalk', 'grass', 'fanfern', 'grass', 'grass', 'bulbstalk', 'lanternlily', 'grass', 'puffcap', 'fanfern', 'grass'];
+    if (this.taskOnly) {
+      for (let i = 0; i < 7; i++) plant('grass', (i + 0.5 + (r() - 0.5) * 0.8) / 7 * W, 0.7);
+      this.stats.created = Date.now();
+      this.log('A new glass, bare but for some grass. Finish a task and the first life will come.', 'milestone');
+      return;
+    }
     kinds.forEach((k, i) => plant(k, (i + 0.5 + (r() - 0.5) * 0.8) / kinds.length * W, 0.6 + r() * 0.4));
     for (let i = 0; i < 3; i++) this.spawn('scuttler', { age: rr(1, 4) * HR, origin: 'First settler', energy: 0.8 });
     for (let i = 0; i < 3; i++) this.spawn('petalmoth', { age: rr(0.6, 2) * HR, origin: 'First settler', energy: 0.8 });
@@ -913,6 +925,7 @@ export class World {
   }
 
   sprout(dt) {
+    if (this.taskOnly) return;
     const cap = this.floraCap();
     const n = this.flora.length;
     if (n >= cap) return;
@@ -939,6 +952,7 @@ export class World {
   // outsiders only arrive when a species has been gone a long time and its
   // seed bank is empty: the glass mostly rescues itself
   immigrate(dt) {
+    if (this.taskOnly) return;
     for (const kind of FAUNA_KINDS) {
       if (!this.unlocked(kind)) continue;
       if (this.count(kind) + this.countEggs(kind) > 0 || this.bank[kind]) continue;
@@ -962,6 +976,7 @@ export class World {
 
   // species unlocked before the predators existed arrive one at a time
   arrivals() {
+    if (this.taskOnly) return; // unlocked kinds come from finished tasks instead
     const q = this.stats.pendingArrivals;
     if (!q?.length || this.simTime < (this.stats.nextArrival || 0)) return;
     const kind = q.shift();
@@ -988,7 +1003,7 @@ export class World {
   }
 
   scheduleVisitors() {
-    if (this.offline || !this.unlocked('gloamwhale')) return;
+    if (this.offline || !this.unlocked('gloamwhale') || this.taskOnly) return;
     if (!this.stats.nextWhale) this.stats.nextWhale = this.simTime + rr(4, 12) * 60000;
     if (this.simTime > this.stats.nextWhale && !this.visitors.length) {
       this.stats.nextWhale = this.simTime + rr(35, 80) * 60000;
@@ -1068,14 +1083,16 @@ export class World {
     this.stats.tasksDone++;
     const done = this.stats.tasksDone;
     const newly = Object.keys(SPECIES).filter((k) => SPECIES[k].unlock === done);
-    const pool = FAUNA_KINDS.filter((k) => this.unlocked(k) && k !== 'mindbloom' && !PREDATORS.includes(k));
+    // in task-only glasses predators come from tasks too, once there is prey for them
+    const prey = this.count('scuttler') + this.count('petalmoth') + this.count('bellwisp') + this.count('ribbonfin');
+    const pool = FAUNA_KINDS.filter((k) => this.unlocked(k) && k !== 'mindbloom' && (!PREDATORS.includes(k) || (this.taskOnly && prey >= 6)));
     let kind = newly.find((k) => CREATURES[k] && k !== 'mindbloom');
     if (newly.includes('mindbloom')) kind = 'mindbloom';
     if (!kind) {
       let best = null, bs = -Infinity;
       for (const k of pool) {
         const room = this.ceil(k) - this.count(k) - this.countEggs(k);
-        const s = room / this.ceil(k) + Math.random() * 0.35;
+        const s = room / this.ceil(k) * (PREDATORS.includes(k) ? 0.5 : 1) + Math.random() * 0.35;
         if (room > 0 && s > bs) { bs = s; best = k; }
       }
       kind = best;
@@ -1107,6 +1124,16 @@ export class World {
       }
       this.log(`“${task.title}” was finished. The terrarium is full, so it fed the soil and three sprouts appeared.`, 'task');
     }
+    if (this.taskOnly) {
+      // a finished task also greens its patch, more for a bigger job
+      const steps = Math.min(task.steps?.length || 0, 9);
+      for (let i = 0; i < 2 + Math.floor(steps / 3); i++) this.plantFromTask(x + rr(-14, 14) * this.U, 0.25);
+      if (this.unlocked('gloamwhale') && !this.visitors.length && !this.offline && Math.random() < 0.2) {
+        this.visitors.push(new Gloamwhale(this));
+        this.discover('gloamwhale');
+        this.log('A gloamwhale drifted across the far sky, drawn by the finished work.', 'visitor');
+      }
+    }
     for (const k of newly) {
       this.discover(k);
       if (SPECIES[k].kind === 'flora' && (k === 'snaplure' || k === 'dewveil')) this.introduce(k, k === 'snaplure' ? x + 10 * this.U : undefined);
@@ -1114,6 +1141,20 @@ export class World {
       this.emit('unlock', k);
     }
     return { creature, newly };
+  }
+
+  // a plant brought by a finished task or step (task-only glasses)
+  plantFromTask(x, growth = 0.15, kind) {
+    if (this.flora.length >= this.floraCap()) return null;
+    const U = this.U;
+    x = clamp(x, 3 * U, this.W - 3 * U);
+    if (this.inPond(x, 3 * U)) x = x < (this.pond.x0 + this.pond.x1) / 2 ? this.pond.x0 - 5 * U : this.pond.x1 + 5 * U;
+    kind ||= pickKind(sproutWeights(this));
+    const p = new Plant({ kind, x, growth, n: this.takeN(x, ECO.nPlant[kind] * growth) });
+    p.life *= TASK_PLANT_LIFE;
+    this.flora.push(p);
+    if (kind === 'coilspire' || kind === 'tubebloom') this.discover(kind);
+    return p;
   }
 
   // ------------------------------------------------------------ carrying

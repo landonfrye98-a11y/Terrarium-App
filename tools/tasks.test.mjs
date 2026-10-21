@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { World } from '../www/js/world.js';
 import { TaskGarden } from '../www/js/tasks.js';
 import { parseDue, parseEntry, fmtDue, DAY } from '../www/js/when.js';
+import { Reminders } from '../www/js/remind.js';
 
 let n = 0;
 const test = (name, fn) => { try { fn(); n++; } catch (e) { console.error(`✗ ${name}\n`, e); process.exitCode = 1; } };
@@ -105,6 +106,28 @@ test('old saves load with no dates, steps or weeds', () => {
   g.updateWeeds();
   assert.equal(g.stage(t), 0);
   assert.ok(JSON.stringify(g.serialize()).includes('"steps":[]'));
+});
+
+test('reminders: when due, early, mornings, and the overdue nudge', () => {
+  const app = { settings: { reminders: true, remindLead: 'ontime' } };
+  const R = new Reminders(app, null);
+  const at3 = new Date(2026, 9, 22, 15, 0).getTime();
+  const tasks = [
+    { id: 'a', title: 'vet', state: 'seed', due: at3, allDay: false },
+    { id: 'b', title: 'trash', state: 'seed', due: new Date(2026, 9, 25, 23, 59, 59, 999).getTime(), allDay: true },
+    { id: 'c', title: 'done one', state: 'done', due: at3, allDay: false },
+    { id: 'd', title: 'no date', state: 'seed', due: null },
+  ];
+  const plan = R.plan(tasks, now);
+  const hm = (t) => new Date(t).toString().slice(0, 21);
+  assert.equal(plan.length, 4);
+  assert.equal(hm(plan[0].at), hm(at3));
+  assert.ok(plan.some((r) => r.title === 'trash' && new Date(r.at).getHours() === 9 && new Date(r.at).getDate() === 25));
+  assert.ok(plan.some((r) => r.title === 'Overdue: vet' && new Date(r.at).getDate() === 23 && new Date(r.at).getHours() === 9));
+  app.settings.remindLead = '60';
+  assert.equal(R.plan(tasks, now)[0].at, at3 - 3600e3);
+  // nothing in the past is scheduled
+  assert.equal(R.plan(tasks, at3 + 5 * DAY).length, 0);
 });
 
 if (!process.exitCode) console.log(`tasks: ${n} tests passed`);

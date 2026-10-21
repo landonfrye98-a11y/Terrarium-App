@@ -722,6 +722,9 @@ export class UI {
     });
     $('#dim-val').textContent = `${Math.round(s.dim * 100)}%`;
     $('#perf-hint').textContent = PERF_HINT[s.perf];
+    $('#remind-hint').textContent = this.app.native
+      ? 'For tasks due on a day, the reminder comes at 9 in the morning. If a task is still not done the next morning, you get one more.'
+      : 'In the browser, reminders arrive while Glasswild is open, even in the background. Ones you missed are shown when you open it again. The Android app can remind you when it’s fully closed. For tasks due on a day, the reminder comes at 9 in the morning.';
     const w = this.world;
     const days = (Date.now() - w.stats.created) / 86400000;
     $('#world-stats').textContent = `Sealed ${days < 1 ? 'today' : Math.floor(days) + ' day' + (Math.floor(days) === 1 ? '' : 's') + ' ago'}. ${w.fauna.length} creatures and ${w.flora.length} plants alive. ${w.stats.births} births, ${w.stats.deaths} deaths, ${w.stats.tasksDone} tasks bloomed.`;
