@@ -121,7 +121,7 @@ export class UI {
       const act = b.dataset.act;
       if (act === 'start') { this.garden.start(id); this.app.haptic(6); }
       else if (act === 'pause') this.garden.pause(id);
-      else if (act === 'target') { this.garden.cycleTarget(id); this.app.haptic?.(4); }
+      else if (act === 'tplus' || act === 'tminus') { this.garden.stepTarget(id, act === 'tplus' ? 1 : -1); this.app.haptic?.(4); }
       else if (act === 'done') { this.app.completeTask(id); }
       else if (act === 'del') {
         if (b.classList.contains('armed')) this.garden.remove(id);
@@ -129,6 +129,16 @@ export class UI {
       }
     };
     $('#task-list').addEventListener('click', onAct);
+    // typed targets apply when you leave the box or press enter
+    $('#task-list').addEventListener('change', (e) => {
+      const inp = e.target.closest('input.tmin');
+      if (!inp) return;
+      const v = parseInt(inp.value, 10);
+      if (v > 0) this.garden.setTarget(inp.dataset.tid, v);
+      else this.renderTasks();
+    });
+    $('#task-list').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('input.tmin')) e.target.blur(); });
+    $('#focus-plus').addEventListener('click', () => { const t = this.garden.active; if (t) { this.garden.stepTarget(t.id, 1); this.app.haptic?.(4); } });
     $('#done-list').addEventListener('click', (e) => {
       const li = e.target.closest('li[data-cid]');
       if (li) { const c = this.world.find(li.dataset.cid); if (c) { this.close(); this.app.select(c); } }
@@ -159,7 +169,8 @@ export class UI {
       return `<li data-id="${t.id}" class="${cls}">
         <i class="pod" style="background:${t.c1}"></i>
         <div class="t"><b>${escapeHtml(t.title)}</b>
-          <div class="meta"><span data-el="${t.id}">${this.taskStatus(t)}</span><button class="chip" data-act="target" aria-label="Focus target ${t.targetMin} minutes, tap to change">${t.targetMin}m</button></div>
+          <div class="meta"><span data-el="${t.id}">${this.taskStatus(t)}</span></div>
+          <div class="stepper"><button data-act="tminus" aria-label="5 minutes less">−</button><input class="tmin" data-tid="${t.id}" type="number" inputmode="numeric" min="1" max="600" step="1" value="${t.targetMin}" aria-label="Focus target in minutes"><span class="unit">min</span><button data-act="tplus" aria-label="5 minutes more">+</button></div>
           ${active || el > 0 ? `<i class="prog"><i data-pg="${t.id}" style="width:${(g.progress(t) * 100).toFixed(1)}%"></i></i>` : ''}</div>
         <div class="acts">
           <button class="icon-btn" data-act="${active ? 'pause' : 'start'}" aria-label="${active ? 'Pause' : 'Start'}">${active ? PAUSE : PLAY}</button>

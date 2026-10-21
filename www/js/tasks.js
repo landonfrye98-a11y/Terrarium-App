@@ -6,7 +6,8 @@ import { P, FAMILIES } from './palette.js';
 import { TAU, clamp, hashStr, mulberry32, pick, uid, drawGlow, smooth, mixHex } from './util.js';
 
 // A sprout reaches full height exactly when its focus target is met.
-export const TARGETS = [15, 25, 45, 60, 90]; // minutes
+// Targets are whole minutes; the stepper moves in 5s, typing allows any value.
+export const MIN_TARGET = 1, MAX_TARGET = 600, STEP_TARGET = 5;
 const DEFAULT_TARGET = 25;
 const LEGACY_TARGET = 50; // tasks saved before targets existed grew over 50 minutes
 const LAST_TARGET_KEY = 'glasswild.lastTarget';
@@ -14,7 +15,7 @@ const LAST_TARGET_KEY = 'glasswild.lastTarget';
 function loadLastTarget() {
   try {
     const v = parseInt(localStorage.getItem(LAST_TARGET_KEY), 10);
-    if (TARGETS.includes(v)) return v;
+    if (v >= MIN_TARGET && v <= MAX_TARGET) return v;
   } catch {}
   return DEFAULT_TARGET;
 }
@@ -76,7 +77,9 @@ export class TaskGarden {
 
   setTarget(id, min) {
     const t = this.tasks.find((x) => x.id === id);
+    min = Math.round(min);
     if (!t || !(min > 0)) return;
+    min = clamp(min, MIN_TARGET, MAX_TARGET);
     t.targetMin = min;
     // only chime for targets still ahead; lowering below elapsed is silent
     t.chimed = this.elapsed(t) >= this.targetMs(t);
@@ -84,13 +87,14 @@ export class TaskGarden {
     this.changed();
   }
 
-  // the next choice after the current target (wraps; legacy 50 -> 60)
-  cycleTarget(id) {
+  // step to the next multiple of five up or down (23 -> 25 or 20)
+  stepTarget(id, dir) {
     const t = this.tasks.find((x) => x.id === id);
     if (!t) return;
-    const next = TARGETS.find((m) => m > t.targetMin) ?? TARGETS[0];
-    this.setTarget(id, next);
-    return next;
+    const cur = t.targetMin || DEFAULT_TARGET;
+    const next = dir > 0 ? Math.floor(cur / STEP_TARGET) * STEP_TARGET + STEP_TARGET : Math.ceil(cur / STEP_TARGET) * STEP_TARGET - STEP_TARGET;
+    this.setTarget(id, clamp(next, STEP_TARGET, MAX_TARGET));
+    return t.targetMin;
   }
 
   // called once a second by the app: publishes the active sprout tip to the

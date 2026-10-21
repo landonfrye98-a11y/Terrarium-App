@@ -161,16 +161,6 @@ body.idle #focus-bar { opacity: 0.55; pointer-events: auto; }
 .task-list .meta span { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .task-list li.active .t span { color: var(--mint); }
 .task-list li.ripe .t span { color: var(--amber); }
-.chip {
-  flex: none; height: 22px; padding: 0 8px; border-radius: 11px; cursor: pointer;
-  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; font-variant-numeric: tabular-nums;
-  color: var(--cream); background: rgba(239, 228, 204, 0.08); border: 1px solid var(--panel-line);
-  position: relative;
-}
-.chip::before { content: ""; position: absolute; inset: -11px -4px; } /* bigger tap target */
-.chip:active { background: rgba(239, 228, 204, 0.2); }
-.task-list li.active .chip { border-color: rgba(111, 183, 168, 0.5); color: var(--mint); }
-.task-list li.ripe .chip { border-color: rgba(255, 201, 107, 0.5); color: var(--amber); }
 .task-list .prog { display: block; height: 3px; margin-top: 6px; border-radius: 2px; background: rgba(239, 228, 204, 0.1); overflow: hidden; }
 .task-list .prog i { display: block; height: 100%; border-radius: 2px; background: var(--sea); transition: width 1s linear; }
 .task-list li:not(.active) .prog i { background: rgba(111, 183, 168, 0.5); }
@@ -288,3 +278,13 @@ body.idle #inspector { opacity: 1; pointer-events: auto; }
 .log .k-hunt { color: var(--salmon); }
 .log .k-fungus { color: #c9d98a; }
 .log .k-arrival { color: var(--sea); }
+
+/* focus target stepper */
+.stepper { display: inline-flex; align-items: center; gap: 2px; margin-top: 6px; padding: 2px; border-radius: 12px; background: rgba(239, 228, 204, 0.07); border: 1px solid var(--panel-line); }
+.stepper button { width: 34px; height: 30px; border: 0; border-radius: 9px; background: transparent; font-size: 18px; line-height: 1; cursor: pointer; color: var(--cream); }
+.stepper button:active { background: rgba(239, 228, 204, 0.14); }
+.stepper .tmin { width: 46px; height: 30px; border: 0; background: transparent; color: var(--cream); font: inherit; font-size: 15px; text-align: right; font-variant-numeric: tabular-nums; -moz-appearance: textfield; outline: none; }
+.stepper .tmin::-webkit-outer-spin-button, .stepper .tmin::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper .tmin:focus { background: rgba(111, 183, 168, 0.18); border-radius: 8px; }
+.stepper .unit { font-size: 12px; color: var(--muted); padding: 0 4px 0 3px; }
+#focus-bar .plus5 { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
