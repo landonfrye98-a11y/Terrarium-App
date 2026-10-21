@@ -16,6 +16,7 @@ import { UI } from './ui.js';
 import { SPECIES } from './species.js';
 import { setArt } from './fauna.js';
 import { setFloraArt } from './flora.js';
+import { SkyFx } from './skyfx.js';
 import { Ambient, TAU, rr, dist2, lerp, smooth, drawGlow } from './util.js';
 import { P } from './palette.js';
 
@@ -54,6 +55,8 @@ class App {
     this.settings = { ...DEFAULTS, ...(store.get(SETTINGS_KEY) || {}) };
     if (params.has('perf')) this.settings.perf = params.get('perf');
     this.amb = new Ambient();
+    this.skyfx = new SkyFx();
+    this.focusLabel = null;
     this.audio = new Soundscape();
     this.selected = null;
     this.running = false;
@@ -173,6 +176,7 @@ class App {
     const dt = Math.min(0.25, Math.max(0, now - this.last) / 1000);
     this.last = now;
     this.world.update(dt * (this.warp || 1));
+    this.skyfx.update(dt, this.world, this.focusLabel, this.clock.font);
     this.render();
     this.frames++;
     this.schedule();
@@ -187,6 +191,7 @@ class App {
       this.lastBgT = w.t;
     }
     // sort draw order once a second
+    this.focusTick();
     if (w._sortDirty) { w.fauna.sort((a, b) => LAYER[a.kind] - LAYER[b.kind]); w._sortDirty = false; }
     this.garden.tick();
     if (dayKey() !== this.day) { this.day = dayKey(); this.garden.rollover(); }
@@ -207,6 +212,7 @@ class App {
 
     const perf = PERF[this.settings.perf];
     for (const v of w.visitors) v.draw(ctx, w);
+    this.skyfx.draw(ctx, w, amb);
     if (perf.plants) {
       if (w.t - this.plantT >= 1 / perf.plants || w.t < this.plantT) {
         this.plantT = w.t;
@@ -388,8 +394,25 @@ class App {
     });
   }
 
+  // the cloud's words, and a small comet for every five focused minutes
+  focusTick() {
+    const g = this.garden, t = g.active;
+    if (!t) { this.focusLabel = null; this.cometMark = null; return; }
+    const el = g.elapsed(t), target = g.targetMs(t);
+    const left = Math.ceil((target - el) / 60000);
+    const title = t.title.length > 28 ? t.title.slice(0, 27) + '…' : t.title;
+    this.focusLabel = el >= target ? `${title} · in bloom` : `${title} · ${left} min left`;
+    const mark = Math.floor(el / 300000);
+    if (this.cometMark == null || this.cometTask !== t.id) { this.cometMark = mark; this.cometTask = t.id; return; }
+    if (mark > this.cometMark) {
+      this.cometMark = mark;
+      if (el < target - 30000) this.skyfx.comet(this.world, false);
+    }
+  }
+
   // the focus timer reached its target (called by the UI)
   focusReached() {
+    this.skyfx.comet(this.world, true);
     this.audio.focusChime();
     this.haptic([30, 80, 30, 80, 60]);
   }

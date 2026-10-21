@@ -10,7 +10,7 @@ const VERSION = 'glasswild-v4';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/main.js', 'js/world.js', 'js/fauna.js', 'js/flora.js', 'js/scenery.js', 'js/clock.js',
-  'js/art.js', 'js/tasks.js', 'js/ui.js', 'js/audio.js', 'js/particles.js', 'js/palette.js', 'js/species.js', 'js/util.js',
+  'js/art.js', 'js/skyfx.js', 'js/tasks.js', 'js/ui.js', 'js/audio.js', 'js/particles.js', 'js/palette.js', 'js/species.js', 'js/util.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
 ];
 const TIMEOUT_MS = 4000;
