@@ -2260,6 +2260,756 @@ function gloomcapGlow(ctx, p, world) {
   drawGlow(ctx, P.glowLime, p.x, gy - 5 * U, 6 * U, n * 0.16 * (1 - (p.wither || 0)));
 }
 
+// ============================================================ BASE FLORA
+// The everyday plants as Vesna growths: fleshy, translucent, eyed, with organs
+// showing through the membranes and pale markings that light up at night.
+// Feeding spots never move: stems end exactly where Plant.tip() says.
+function plantOpen(ctx, p, world) {
+  ctx.save();
+  ctx.translate(p.x, world.groundY(p.x));
+  ctx.scale(world.U, world.U);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+}
+// local stem tip, same maths as Plant.tip() -> XA[63], YA[63]; returns the sway
+function tipLocal(p, world) {
+  const h = p.height, g = p.genome;
+  const sw = swayOf(p, world, 0.06) + g.lean * 0.3;
+  if (p.kind === 'lanternlily') { XA[63] = (h * 0.42 + sw * h * 0.3) * (g.lean >= 0 ? 1 : -1); YA[63] = -h * 0.82; }
+  else { XA[63] = Math.sin(sw) * h; YA[63] = -Math.cos(sw) * h; }
+  return sw;
+}
+
+// ------------------------------------------------------------ GRASS
+// low tufts of soft polyp-fingers, each ending in a pale bead; a few are eyes
+function grPal(g, w) {
+  const c = wc(g.c1 || P.moss, w);
+  return { blade: mixHex(c, P.ink, 0.12), core: mixHex(c, P.cream, 0.42), bead: mixHex(c, P.cream, 0.72), pupil: mixHex(c, P.ink, 0.7) };
+}
+function grassDraw(ctx, p, world, amb) {
+  const g = p.genome, pl = plantPal(p, grPal), R = p.rand();
+  const h = p.height, w = p.wither || 0, a = w > 0.5 ? 0.75 : 1;
+  const s0 = swayOf(p, world, 0.9);
+  const n = Math.min(8, g.n || 4);
+  plantOpen(ctx, p, world);
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const bx = (R[(i * 3) & 31] - 0.5) * 2.6;
+    const hh = h * (0.5 + R[(i * 3 + 1) & 31] * 0.5);
+    const ln = s0 + bx * 0.3 + (bx < 0 ? -w : w) * 0.9;
+    const tx = bx + ln * hh * 0.55, ty = -hh * (1 - w * 0.3);
+    ctx.moveTo(bx, 0);
+    ctx.quadraticCurveTo(bx - ln * hh * 0.12, -hh * 0.7, tx, ty);
+    XA[i] = tx; YA[i] = ty;
+  }
+  ctx.strokeStyle = amb.c(pl.blade, a);
+  ctx.lineWidth = 0.55;
+  ctx.stroke();
+  ctx.strokeStyle = amb.c(pl.core, 0.5 * a);
+  ctx.lineWidth = 0.18;
+  ctx.stroke();
+  ctx.fillStyle = amb.c(pl.bead, a);
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) dot(ctx, XA[i], YA[i], 0.36);
+  ctx.fill();
+  ctx.fillStyle = amb.c(pl.pupil, a);
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) if (R[(i * 3 + 2) & 31] > 0.5) dot(ctx, XA[i] + 0.06, YA[i] - 0.02, 0.17);
+  ctx.fill();
+  ctx.restore();
+}
+function grassGlow(ctx, p, world) {
+  const n = world.night;
+  if (n < 0.3 || p.growth < 0.5) return;
+  drawGlow(ctx, P.glowLime, p.x, world.groundY(p.x) - p.height * 0.85 * world.U, 2.4 * world.U, n * 0.1 * (1 - (p.wither || 0)));
+}
+
+// ------------------------------------------------------------ FANFERN
+// a fan of translucent gill-paddles; a chain of coral organs inside each,
+// a dotted margin, and an eye-pore at every tip
+function ffPal(g, w) {
+  const c1 = wc(g.c1 || P.teal, w), c2 = wc(g.c2 || P.mint, w), c3 = g.c3 || P.cream;
+  return {
+    memA: c1, memB: mixHex(c1, c2, 0.55), rim: mixHex(c1, P.ink, 0.4), rib: mixHex(c2, c3, 0.45),
+    organ: wc(mixHex(P.salmon, P.coral, 0.35), w), nuc: mixHex(P.coral, P.plum, 0.55), margin: c3,
+    eye: mixHex(c3, P.glowCyan, 0.2), pupil: mixHex(c1, P.ink, 0.65), heart: mixHex(c1, P.plum, 0.4), heartLt: mixHex(c2, P.cream, 0.45),
+  };
+}
+// frond angles -> WA[i], lengths XB[i], widths YB[i]
+function ffFronds(p, world, R) {
+  const g = p.genome, h = p.height, w = p.wither || 0;
+  const n = Math.max(2, Math.min(8, g.n || 4));
+  const s = swayOf(p, world, 0.12) + g.lean * 0.3;
+  for (let i = 0; i < n; i++) {
+    const f = i / (n - 1) - 0.5;
+    WA[i] = -PI / 2 + f * 1.8 + s * (0.6 + Math.abs(f)) + f * w * 1.8;
+    XB[i] = h * (0.72 + 0.28 * Math.cos(f * 2)) * (0.85 + R[(i + 5) & 31] * 0.3);
+    YB[i] = XB[i] * (0.2 + R[(i + 11) & 31] * 0.07);
+  }
+  return n;
+}
+function fanfernDraw(ctx, p, world, amb) {
+  const pl = plantPal(p, ffPal), R = p.rand();
+  const w = p.wither || 0, a = w > 0.5 ? 0.75 : 1;
+  const n = ffFronds(p, world, R);
+  const by = -0.5;
+  plantOpen(ctx, p, world);
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.fillStyle = amb.c(pass ? pl.memB : pl.memA, 0.8 * a);
+    ctx.beginPath();
+    for (let i = pass; i < n; i += 2) blade(ctx, 0, by, WA[i], XB[i], YB[i], 1.3);
+    ctx.fill();
+    ctx.strokeStyle = amb.c(pl.rim, 0.55 * a);
+    ctx.lineWidth = 0.12;
+    ctx.stroke();
+  }
+  // midribs + chamber walls
+  ctx.strokeStyle = amb.c(pl.rib, 0.6 * a);
+  ctx.lineWidth = 0.1;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const dx = Math.cos(WA[i]), dy = Math.sin(WA[i]), L = XB[i], W = YB[i];
+    ctx.moveTo(0, by); ctx.lineTo(dx * L * 0.88, by + dy * L * 0.88);
+    for (let k = 1; k <= 3; k++) {
+      const q = 0.22 + k * 0.17, ww = W * (0.55 + q * 0.4);
+      ctx.moveTo(dx * L * q, by + dy * L * q);
+      ctx.lineTo(dx * L * (q + 0.08) - dy * ww, by + dy * L * (q + 0.08) + dx * ww);
+    }
+  }
+  ctx.stroke();
+  // organ chain seen through the membrane
+  ctx.fillStyle = amb.c(pl.organ, 0.75 * a);
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const dx = Math.cos(WA[i]), dy = Math.sin(WA[i]), L = XB[i], W = YB[i];
+    for (let k = 0; k < 3; k++) { const q = 0.3 + k * 0.18; oval(ctx, dx * L * q, by + dy * L * q, L * 0.07, W * 0.34 * (1.15 - q), WA[i]); }
+  }
+  ctx.fill();
+  ctx.fillStyle = amb.c(pl.nuc, 0.7 * a);
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const dx = Math.cos(WA[i]), dy = Math.sin(WA[i]), L = XB[i], W = YB[i];
+    for (let k = 0; k < 3; k++) { const q = 0.3 + k * 0.18; dot(ctx, dx * L * q, by + dy * L * q, W * 0.09); }
+  }
+  ctx.fill();
+  // dotted margin + tip eye-pores (pale by day)
+  ctx.fillStyle = amb.c(pl.margin, 0.85 * a);
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const dx = Math.cos(WA[i]), dy = Math.sin(WA[i]), L = XB[i], W = YB[i];
+    for (let k = 1; k <= 4; k++) {
+      const q = 0.18 + k * 0.15, ww = W * 0.78 * Math.sin(q * PI * 0.92 + 0.15);
+      sq(ctx, dx * L * q - dy * ww, by + dy * L * q + dx * ww, 0.09);
+    }
+    dot(ctx, dx * L * 0.86, by + dy * L * 0.86, W * 0.32);
+  }
+  ctx.fill();
+  ctx.fillStyle = amb.c(pl.pupil, a);
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) dot(ctx, Math.cos(WA[i]) * XB[i] * 0.865, by + Math.sin(WA[i]) * XB[i] * 0.865, YB[i] * 0.14);
+  ctx.fill();
+  // the fleshy heart the fronds spring from
+  const hr = 0.7 + (p.growth || 0) * 0.6;
+  ctx.fillStyle = amb.c(pl.heart, a);
+  ctx.beginPath(); oval(ctx, 0, -0.35, hr, hr * 0.65, 0); ctx.fill();
+  ctx.fillStyle = amb.c(pl.heartLt, 0.8 * a);
+  ctx.beginPath(); dot(ctx, -hr * 0.35, -0.5, hr * 0.22); sq(ctx, hr * 0.3, -0.55, 0.1); ctx.fill();
+  ctx.restore();
+}
+function fanfernGlow(ctx, p, world) {
+  const nt = world.night;
+  if (nt < 0.08 || p.growth < 0.4) return;
+  const U = world.U, gy = world.groundY(p.x);
+  const n = ffFronds(p, world, p.rand());
+  const k = nt * 0.4 * (1 - (p.wither || 0));
+  for (let i = 0; i < n; i += 2) {
+    drawGlow(ctx, P.glowCyan, p.x + Math.cos(WA[i]) * XB[i] * 0.86 * U, gy + (-0.5 + Math.sin(WA[i]) * XB[i] * 0.86) * U, 1.3 * U, k);
+  }
+}
+
+// ------------------------------------------------------------ BULBSTALK
+// a kinked, knuckled stalk with ear-membrane leaves; the fruit is a
+// translucent sac with seeds inside that ripens from c2 to c3 and grows
+// pale spots
+function bsPal(g, w) {
+  const c1 = wc(g.c1 || P.olive, w), c2 = wc(g.c2 || P.mint, w);
+  return {
+    stem: mixHex(c1, P.ink, 0.1), core: mixHex(c2, P.cream, 0.45), knot: mixHex(c2, c1, 0.35), knotDot: mixHex(c2, P.cream, 0.65),
+    leaf: c2, leafDk: mixHex(c2, c1, 0.65), sepal: mixHex(c1, c2, 0.35), c2, c3: wc(g.c3 || P.coral, w),
+  };
+}
+function bsFruitR(p) { return 1.2 + (p.growth - 0.6) * 2.5 + (p.ripe || 0) * 1.6; }
+function bulbstalkDraw(ctx, p, world, amb) {
+  const pl = plantPal(p, bsPal), R = p.rand();
+  const h = p.height, w = p.wither || 0, a = w > 0.5 ? 0.8 : 1, gr = p.growth;
+  const sw = tipLocal(p, world);
+  const tx = XA[63], ty = YA[63];
+  const cs = Math.cos(sw), sn = Math.sin(sw);   // perpendicular to the stalk
+  plantOpen(ctx, p, world);
+  // kinked stalk through three knuckles
+  for (let j = 0; j < 3; j++) {
+    const q = 0.24 + j * 0.24 + (R[j] - 0.5) * 0.06;
+    const off = (j & 1 ? 1 : -1) * (0.3 + R[j + 3] * 0.45) * (0.5 + 0.5 * gr);
+    XB[j] = tx * q + cs * off; YB[j] = ty * q + sn * off;
+  }
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  for (let j = 0; j < 3; j++) ctx.lineTo(XB[j], YB[j]);
+  ctx.lineTo(tx, ty);
+  ctx.strokeStyle = amb.c(pl.stem, a);
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+  ctx.strokeStyle = amb.c(pl.core, 0.5 * a);
+  ctx.lineWidth = 0.22;
+  ctx.stroke();
+  // ear-membrane leaves from the two lower knuckles
+  ctx.beginPath();
+  for (let j = 0; j < 2; j++) {
+    const side = j & 1 ? 1 : -1;
+    const la = -PI / 2 + side * (0.95 + w * 0.9) + sw;
+    blade(ctx, XB[j], YB[j], la, (2.2 + R[6 + j] * 1.3) * (0.4 + 0.6 * gr), 0.85, 1.2);
+  }
+  ctx.fillStyle = amb.c(pl.leaf, 0.78 * a);
+  ctx.fill();
+  ctx.strokeStyle = amb.c(pl.leafDk, 0.6 * a);
+  ctx.lineWidth = 0.1;
+  ctx.stroke();
+  ctx.beginPath();
+  for (let j = 0; j < 2; j++) {
+    const side = j & 1 ? 1 : -1;
+    const la = -PI / 2 + side * (0.95 + w * 0.9) + sw;
+    const L = (2.2 + R[6 + j] * 1.3) * (0.4 + 0.6 * gr);
+    const dx = Math.cos(la), dy = Math.sin(la);
+    ctx.moveTo(XB[j], YB[j]); ctx.lineTo(XB[j] + dx * L * 0.8, YB[j] + dy * L * 0.8);
+    for (let k = 1; k <= 2; k++) { const q = k * 0.3; ctx.moveTo(XB[j] + dx * L * q, YB[j] + dy * L * q); ctx.lineTo(XB[j] + dx * L * (q + 0.12) - dy * side * 0.5, YB[j] + dy * L * (q + 0.12) + dx * side * 0.5); }
+  }
+  ctx.stroke();
+  // knuckles
+  ctx.fillStyle = amb.c(pl.knot, a);
+  ctx.beginPath();
+  for (let j = 0; j < 3; j++) dot(ctx, XB[j], YB[j], 0.42 - j * 0.06);
+  ctx.fill();
+  ctx.fillStyle = amb.c(pl.knotDot, a);
+  ctx.beginPath();
+  for (let j = 0; j < 3; j++) sq(ctx, XB[j] - 0.12, YB[j] - 0.12, 0.08);
+  ctx.fill();
+  if (gr > 0.6) {
+    const r = bsFruitR(p);
+    const rip = Math.round(smooth(p.ripe || 0) * 24) / 24;
+    const col = mixHex(pl.c2, pl.c3, rip);
+    const dx = sn, dy = -cs;                    // along the stalk, outward
+    const fx = tx + dx * r * 0.62, fy = ty + dy * r * 0.62;
+    // sepals cupping the fruit
+    ctx.fillStyle = amb.c(pl.sepal, a);
+    ctx.beginPath();
+    blade(ctx, tx, ty, sw - PI / 2 - 1.05, r * 0.95, r * 0.28, 0.6);
+    blade(ctx, tx, ty, sw - PI / 2 + 1.05, r * 0.95, r * 0.28, 0.6);
+    ctx.fill();
+    // translucent sac
+    ctx.fillStyle = amb.c(col, 0.9 * a);
+    ctx.beginPath(); oval(ctx, fx, fy, r * 0.85, r, sw); ctx.fill();
+    ctx.strokeStyle = amb.c(mixHex(col, P.ink, 0.4), 0.55 * a);
+    ctx.lineWidth = 0.12;
+    ctx.stroke();
+    // seeds inside (fruit-local: x across, y toward the stalk)
+    ctx.fillStyle = amb.c(mixHex(col, P.plum, 0.5), 0.5 * a);
+    ctx.beginPath();
+    for (let k = 0; k < 4; k++) {
+      const lx = (k - 1.5) * 0.24 * r, ly = (0.18 + (k & 1) * 0.22) * r;
+      dot(ctx, fx + lx * cs - ly * sn, fy + lx * sn + ly * cs, r * (0.13 + (k & 1) * 0.04));
+    }
+    ctx.fill();
+    // sheen, top pore, ripening spots
+    ctx.fillStyle = amb.c(P.cream, 0.35 * a);
+    ctx.beginPath(); oval(ctx, fx + (-0.32 * cs + 0.3 * sn) * r, fy + (-0.32 * sn - 0.3 * cs) * r, r * 0.16, r * 0.38, sw + 0.2); ctx.fill();
+    const rp = p.ripe || 0;
+    ctx.fillStyle = amb.c(mixHex(P.cream, P.glowAmber, 0.3), (0.3 + rp * 0.7) * a);
+    ctx.beginPath();
+    for (let k = 0; k < 6; k++) {
+      const an = -PI / 2 + (k - 2.5) * 0.42;
+      const lx = Math.cos(an) * r * 0.62, ly = Math.sin(an) * r * 0.72;
+      sq(ctx, fx + lx * cs - ly * sn, fy + lx * sn + ly * cs, 0.06 + rp * 0.08);
+    }
+    ctx.fill();
+    ctx.fillStyle = amb.c(mixHex(col, P.ink, 0.55), a);
+    ctx.beginPath(); dot(ctx, fx + dx * r * 0.9, fy + dy * r * 0.9, r * 0.11); ctx.fill();
+  }
+  ctx.restore();
+}
+function bulbstalkGlow(ctx, p, world) {
+  const n = world.night, rp = p.ripe || 0;
+  if (n < 0.05 || p.growth <= 0.6 || rp < 0.05) return;
+  const U = world.U, gy = world.groundY(p.x);
+  const sw = tipLocal(p, world);
+  const r = bsFruitR(p);
+  const fx = XA[63] + Math.sin(sw) * r * 0.62, fy = YA[63] - Math.cos(sw) * r * 0.62;
+  drawGlow(ctx, P.glowAmber, p.x + fx * U, gy + fy * U, r * 2.2 * U, n * 0.3 * rp * (1 - (p.wither || 0)));
+}
+
+// ------------------------------------------------------------ LANTERNLILY
+// an arching stalk; at its tip hangs a hooded, ribbed lantern whose nectar
+// sac shows through the membrane and glows with how full it is
+function llPal(g, w) {
+  const c1 = wc(g.c1 || P.moss, w), c2 = wc(g.c2 || P.salmon, w), c3 = wc(g.c3 || P.rust, w), gl = g.glow || P.glowAmber;
+  return {
+    stem: c1, stemLt: mixHex(c1, P.cream, 0.4), bract: mixHex(c1, c3, 0.3), bell: c2, rib: mixHex(c3, c2, 0.25),
+    hood: mixHex(c3, c1, 0.3), sacLo: mixHex(c2, P.cream, 0.45), gl, hem: mixHex(c3, P.ink, 0.15), bead: mixHex(gl, P.cream, 0.45),
+  };
+}
+function llBell(ctx, b) {
+  ctx.moveTo(0, 0.15 * b);
+  ctx.bezierCurveTo(1.3 * b, 0.15 * b, 1.4 * b, 1.55 * b, 0.9 * b, 2.05 * b);
+  for (let k = 0; k < 3; k++) {
+    const x0 = 0.9 - k * 0.6, x1 = x0 - 0.6, xm = (x0 + x1) / 2;
+    ctx.quadraticCurveTo(x0 * b, 2.45 * b, xm * b, 2.6 * b);
+    ctx.quadraticCurveTo(x1 * b, 2.45 * b, x1 * b, 2.05 * b);
+  }
+  ctx.bezierCurveTo(-1.4 * b, 1.55 * b, -1.3 * b, 0.15 * b, 0, 0.15 * b);
+}
+function lanternlilyDraw(ctx, p, world, amb) {
+  const g = p.genome, pl = plantPal(p, llPal);
+  const h = p.height, w = p.wither || 0, a = w > 0.5 ? 0.8 : 1, gr = p.growth;
+  const sw = tipLocal(p, world);
+  const tx = XA[63], ty = YA[63];
+  const dir = g.lean >= 0 ? 1 : -1;
+  plantOpen(ctx, p, world);
+  // basal bracts
+  ctx.fillStyle = amb.c(pl.bract, a);
+  ctx.beginPath();
+  blade(ctx, 0, 0, -PI / 2 - dir * (0.75 + w), h * 0.28, 0.75, 1.1);
+  blade(ctx, 0, 0, -PI / 2 + dir * (0.45 + w), h * 0.2, 0.6, 1.1);
+  ctx.fill();
+  // arching stalk ending exactly at the tip
+  const c1x = sw * 2, c1y = -h * 0.7, c2x = tx * 0.6, c2y = -h * 1.12;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.bezierCurveTo(c1x, c1y, c2x, c2y, tx, ty);
+  ctx.strokeStyle = amb.c(pl.stem, a);
+  ctx.lineWidth = 0.55;
+  ctx.stroke();
+  ctx.strokeStyle = amb.c(pl.stemLt, 0.5 * a);
+  ctx.lineWidth = 0.14;
+  ctx.stroke();
+  // pale nodules along the stalk
+  ctx.fillStyle = amb.c(pl.bead, 0.8 * a);
+  ctx.beginPath();
+  for (let k = 1; k <= 4; k++) {
+    const q = k * 0.19, iq = 1 - q;
+    const x = 3 * iq * iq * q * c1x + 3 * iq * q * q * c2x + q * q * q * tx;
+    const y = 3 * iq * iq * q * c1y + 3 * iq * q * q * c2y + q * q * q * ty;
+    sq(ctx, x + 0.3, y, 0.1);
+  }
+  ctx.fill();
+  ctx.save();
+  ctx.translate(tx, ty);
+  ctx.rotate(sw * 0.5 + w * 0.4 * dir);
+  if (gr > 0.45) {
+    const b = 1.2 + gr * 1.6;
+    const nec = p.nectar ?? 1;
+    // stamens dangling below the hem
+    const t = world.t;
+    ctx.strokeStyle = amb.c(pl.rib, 0.8 * a);
+    ctx.lineWidth = 0.1;
+    ctx.beginPath();
+    for (let k = -1; k <= 1; k++) {
+      const L = b * (0.7 + (k & 1) * 0.35 + (k === 0 ? 0.25 : 0));
+      const s = Math.sin(t * 1.3 + k * 2 + p.x) * 0.25;
+      ctx.moveTo(k * 0.35 * b, 2.2 * b);
+      ctx.quadraticCurveTo(k * 0.45 * b, 2.2 * b + L * 0.5, k * 0.4 * b + s, 2.2 * b + L);
+      XB[k + 1] = k * 0.4 * b + s; YB[k + 1] = 2.2 * b + L;
+    }
+    ctx.stroke();
+    ctx.fillStyle = amb.c(pl.bead, a);
+    ctx.beginPath();
+    for (let k = 0; k < 3; k++) dot(ctx, XB[k], YB[k], 0.2 + (k === 1 ? 0.06 : 0));
+    ctx.fill();
+    // membrane lantern
+    ctx.fillStyle = amb.c(pl.bell, 0.82 * a);
+    ctx.beginPath(); llBell(ctx, b); ctx.fill();
+    ctx.strokeStyle = amb.c(pl.hem, 0.5 * a);
+    ctx.lineWidth = 0.1;
+    ctx.stroke();
+    // nectar sac, filling and brightening with nectar
+    const nq = Math.round(nec * 10) / 10;
+    ctx.fillStyle = amb.c(mixHex(pl.sacLo, pl.gl, nq * 0.75), (0.45 + 0.45 * nq) * a);
+    ctx.beginPath(); oval(ctx, 0, 1.45 * b, 0.6 * b, (0.35 + 0.3 * nq) * b, 0); ctx.fill();
+    // ribs
+    ctx.strokeStyle = amb.c(pl.rib, 0.5 * a);
+    ctx.lineWidth = 0.1;
+    ctx.beginPath();
+    for (let k = -1; k <= 1; k += 2) {
+      ctx.moveTo(k * 0.2 * b, 0.35 * b); ctx.quadraticCurveTo(k * 1.05 * b, 1.2 * b, k * 0.6 * b, 2.3 * b);
+      ctx.moveTo(k * 0.08 * b, 0.4 * b); ctx.quadraticCurveTo(k * 0.4 * b, 1.3 * b, k * 0.15 * b, 2.45 * b);
+    }
+    ctx.stroke();
+    // hood with a dotted margin, and bubbles in the sac
+    ctx.fillStyle = amb.c(pl.hood, a);
+    ctx.beginPath();
+    ctx.moveTo(-0.85 * b, 0.6 * b);
+    ctx.quadraticCurveTo(-0.95 * b, -0.45 * b, 0, -0.4 * b);
+    ctx.quadraticCurveTo(0.95 * b, -0.45 * b, 0.85 * b, 0.6 * b);
+    ctx.quadraticCurveTo(0, 0.2 * b, -0.85 * b, 0.6 * b);
+    ctx.fill();
+    ctx.fillStyle = amb.c(pl.bead, 0.9 * a);
+    ctx.beginPath();
+    for (let k = -2; k <= 2; k++) sq(ctx, k * 0.33 * b, 0.42 * b - Math.abs(k) * 0.02 * b + (k * k) * 0.025 * b, 0.07);
+    dot(ctx, -0.2 * b, 1.4 * b, 0.12 * b * (0.5 + nq * 0.5)); dot(ctx, 0.18 * b, 1.6 * b, 0.08 * b * (0.5 + nq * 0.5));
+    ctx.fill();
+  } else {
+    const b = 0.6 + gr;
+    ctx.fillStyle = amb.c(pl.bell, a);
+    ctx.beginPath(); oval(ctx, 0, b * 0.7, b * 0.42, b * 0.75, 0); ctx.fill();
+    ctx.fillStyle = amb.c(pl.hood, a);
+    ctx.beginPath(); oval(ctx, 0, b * 0.15, b * 0.45, b * 0.3, 0); ctx.fill();
+  }
+  ctx.restore();
+  ctx.restore();
+}
+function lanternlilyGlow(ctx, p, world) {
+  const n = world.night;
+  if (n < 0.05 || p.growth <= 0.45) return;
+  const U = world.U, gy = world.groundY(p.x);
+  const sw = tipLocal(p, world);
+  const dir = p.genome.lean >= 0 ? 1 : -1;
+  const r = sw * 0.5 + (p.wither || 0) * 0.4 * dir;
+  const b = 1.2 + p.growth * 1.6;
+  const nec = p.nectar ?? 1;
+  const x = p.x + (XA[63] - Math.sin(r) * 1.45 * b) * U, y = gy + (YA[63] + Math.cos(r) * 1.45 * b) * U;
+  const k = n * (1 - (p.wither || 0));
+  const gl = p.genome.glow || P.glowAmber;
+  drawGlow(ctx, gl, x, y, (2.5 + b * 1.4) * U, k * (0.15 + nec * 0.45));
+  drawGlow(ctx, gl, x, y, b * 0.7 * U, k * nec * 0.8);
+}
+
+// ------------------------------------------------------------ PUFFCAP
+// a swollen, ringed stalk with a drooping skirt; a domed spore-sac with a
+// visible spore mass and a chimney pore at the very top, where puffs leave
+function pcPal(g, w) {
+  const c1 = wc(g.c1 || P.bone, w), c2 = wc(g.c2 || P.coral, w), c3 = wc(g.c3 || P.cream, w);
+  return {
+    stalk: c3, stalkDk: mixHex(c3, P.ink, 0.35), skirt: mixHex(c3, c2, 0.3), cap: c2, capDk: mixHex(c2, P.ink, 0.45),
+    gill: mixHex(c2, P.plum, 0.55), spore: mixHex(c2, P.plum, 0.35), spot: c1, lip: mixHex(c1, P.cream, 0.5), pore: mixHex(P.ink, c2, 0.2),
+  };
+}
+function puffcapDraw(ctx, p, world, amb) {
+  const pl = plantPal(p, pcPal), R = p.rand();
+  const h = p.height, w = p.wither || 0, a = w > 0.5 ? 0.8 : 1, gr = p.growth;
+  const s = swayOf(p, world, 0.03);
+  const tx = s * h;
+  const r = (1.6 + gr * 2.2) * (1 - w * 0.25);
+  const cy = -h + r * 0.8;
+  const k = 0.45 + gr * 0.45;
+  plantOpen(ctx, p, world);
+  // two satellite buds at the foot
+  ctx.strokeStyle = amb.c(pl.stalk, a);
+  ctx.lineWidth = 0.3;
+  ctx.beginPath();
+  for (let j = 0; j < 2; j++) {
+    const bx = (j ? 1 : -1) * (1.3 + R[20 + j] * 1.1), bh = (0.7 + R[22 + j] * 0.9) * (0.4 + 0.6 * gr);
+    ctx.moveTo(bx, 0); ctx.lineTo(bx + s * 0.5, -bh);
+    XB[j] = bx + s * 0.5; YB[j] = -bh;
+  }
+  ctx.stroke();
+  // swollen stalk
+  ctx.fillStyle = amb.c(pl.stalk, a);
+  ctx.beginPath();
+  ctx.moveTo(-k * 1.2, 0.1);
+  ctx.quadraticCurveTo(-k * 1.5, -h * 0.35, tx - 0.32 * k, cy);
+  ctx.lineTo(tx + 0.32 * k, cy);
+  ctx.quadraticCurveTo(k * 1.5, -h * 0.35, k * 1.2, 0.1);
+  ctx.fill();
+  ctx.strokeStyle = amb.c(pl.stalkDk, 0.5 * a);
+  ctx.lineWidth = 0.1;
+  ctx.beginPath();
+  for (let j = 1; j <= 3; j++) {
+    const y = -h * 0.1 * j - 0.1, ww = k * (1.15 - j * 0.12);
+    ctx.moveTo(-ww + tx * j * 0.08, y); ctx.quadraticCurveTo(tx * j * 0.1, y + 0.3, ww + tx * j * 0.08, y);
+  }
+  ctx.stroke();
+  // skirt (annulus) hanging under the cap
+  const ys = cy + (-cy) * 0.28, xs = tx * 0.75, ws = k * 1.1;
+  ctx.fillStyle = amb.c(pl.skirt, 0.85 * a);
+  ctx.beginPath();
+  ctx.moveTo(xs - ws * 0.5, ys - 0.3);
+  ctx.quadraticCurveTo(xs - ws * 1.1, ys + 0.2, xs - ws * 1.2, ys + 0.9);
+  for (let j = 0; j < 3; j++) {
+    const x0 = xs - ws * 1.2 + j * ws * 0.8;
+    ctx.quadraticCurveTo(x0 + ws * 0.4, ys + 0.45, x0 + ws * 0.8, ys + 0.95 - (j === 1 ? 0.1 : 0));
+  }
+  ctx.quadraticCurveTo(xs + ws * 1.1, ys + 0.2, xs + ws * 0.5, ys - 0.3);
+  ctx.fill();
+  // bud caps + gill band
+  ctx.fillStyle = amb.c(pl.gill, a);
+  ctx.beginPath();
+  oval(ctx, tx, cy, r, r * 0.3, s * 0.3);
+  ctx.fill();
+  ctx.strokeStyle = amb.c(pl.capDk, 0.7 * a);
+  ctx.lineWidth = 0.08;
+  ctx.beginPath();
+  for (let j = -4; j <= 4; j++) { ctx.moveTo(tx + j * r * 0.08, cy + r * 0.04); ctx.lineTo(tx + j * r * 0.21, cy + r * 0.27 - Math.abs(j) * r * 0.02); }
+  ctx.stroke();
+  // dome
+  ctx.fillStyle = amb.c(pl.cap, 0.94 * a);
+  ctx.beginPath();
+  ctx.moveTo(tx - r, cy);
+  ctx.ellipse(tx, cy, r, r * 0.8, 0, PI, TAU);
+  ctx.quadraticCurveTo(tx, cy + r * 0.2, tx - r, cy);
+  for (let j = 0; j < 2; j++) { oval(ctx, XB[j], YB[j], 0.5 * (0.5 + 0.5 * gr), 0.38 * (0.5 + 0.5 * gr), 0); }
+  ctx.fill();
+  // spore mass inside
+  ctx.fillStyle = amb.c(pl.spore, 0.45 * a);
+  ctx.beginPath(); oval(ctx, tx, cy - r * 0.36, r * 0.52, r * 0.3, 0); ctx.fill();
+  // pale markings + dotted rim
+  ctx.fillStyle = amb.c(pl.spot, 0.9 * a);
+  ctx.beginPath();
+  for (let j = 0; j < 6; j++) {
+    const an = PI + 0.35 + R[j * 2] * (PI - 0.7);
+    const rr = r * (0.35 + R[j * 2 + 1] * 0.45);
+    dot(ctx, tx + Math.cos(an) * rr, cy + Math.sin(an) * rr * 0.8, 0.18 + R[(j * 3 + 7) & 31] * 0.26);
+  }
+  for (let j = -3; j <= 3; j++) sq(ctx, tx + j * r * 0.29, cy - 0.12, 0.08);
+  for (let j = 0; j < 2; j++) sq(ctx, XB[j], YB[j] - 0.15, 0.08);
+  ctx.fill();
+  // chimney pore at the very top (height p.height)
+  ctx.fillStyle = amb.c(pl.lip, a);
+  ctx.beginPath(); oval(ctx, tx, -h + 0.05, 0.42, 0.3, 0); ctx.fill();
+  ctx.fillStyle = amb.c(pl.pore, a);
+  ctx.beginPath(); oval(ctx, tx, -h - 0.02, 0.2, 0.12, 0); ctx.fill();
+  ctx.restore();
+}
+function puffcapGlow(ctx, p, world) {
+  const n = world.night;
+  if (n < 0.05 || p.growth < 0.4) return;
+  const U = world.U, gy = world.groundY(p.x), h = p.height;
+  const tx = swayOf(p, world, 0.03) * h;
+  const r = 1.6 + p.growth * 2.2;
+  const k = n * (1 - (p.wither || 0));
+  drawGlow(ctx, P.glowLime, p.x + tx * U, gy + (-h + r * 0.45) * U, r * 1.5 * U, k * 0.18);
+  drawGlow(ctx, P.glowLime, p.x + tx * U, gy - h * U, 1.1 * U, k * 0.45);
+}
+
+// ------------------------------------------------------------ TUBEBLOOM
+// a cluster of ringed, fleshy tubes on a basal pad; by day each is sealed
+// with a pale bud, at night the mouths flare open with glowing feelers
+function tbPal(g, w) {
+  const c1 = wc(g.c1 || P.mauve, w), c2 = wc(g.c2 || P.cream, w), gl = g.glow || P.glowCyan;
+  return {
+    tube: c1, tubeDk: mixHex(c1, P.ink, 0.35), tubeLt: mixHex(c1, P.cream, 0.45), lip: c2, lipDk: mixHex(c2, c1, 0.5),
+    throat: mixHex(P.ink, c1, 0.25), gl, glDay: mixHex(gl, P.cream, 0.45), mat: mixHex(c1, P.plum, 0.4),
+  };
+}
+// tube k: tip -> XA[k], YA[k]; base x -> XB[k]; height -> YB[k]; mouth angle -> WA[k]
+function tbTubes(p, world, R, open) {
+  const g = p.genome, h = p.height, w = p.wither || 0;
+  const n = Math.max(2, Math.min(7, g.n || 4));
+  const s0 = swayOf(p, world, 0.03);
+  for (let k = 0; k < n; k++) {
+    const bx = (k - (n - 1) / 2) * 1.25 + (R[(k * 2) & 31] - 0.5) * 0.5;
+    const hh = h * (0.5 + R[(k * 2 + 1) & 31] * 0.5) * (1 - w * 0.2);
+    const s = s0 * hh + bx * (0.12 + open * 0.15) + w * bx * 0.8;
+    XA[k] = bx + s; YA[k] = -hh; XB[k] = bx; YB[k] = hh;
+    WA[k] = Math.atan2(-hh * 0.4, s) + PI / 2;
+  }
+  return n;
+}
+function tubebloomDraw(ctx, p, world, amb) {
+  const pl = plantPal(p, tbPal), R = p.rand();
+  const w = p.wither || 0, a = w > 0.5 ? 0.8 : 1;
+  const open = clamp(world.night || 0, 0, 1) * (1 - w * 0.6);
+  const n = tbTubes(p, world, R, open);
+  plantOpen(ctx, p, world);
+  ctx.fillStyle = amb.c(pl.mat, a);
+  ctx.beginPath(); oval(ctx, 0, -0.1, n * 0.62 + 0.7, 0.7, 0); ctx.fill();
+  ctx.beginPath();
+  for (let k = 0; k < n; k++) { ctx.moveTo(XB[k], 0); ctx.quadraticCurveTo(XB[k], -YB[k] * 0.6, XA[k], YA[k]); }
+  ctx.strokeStyle = amb.c(pl.tube, a);
+  ctx.lineWidth = 1.1;
+  ctx.stroke();
+  ctx.strokeStyle = amb.c(pl.tubeLt, 0.45 * a);
+  ctx.lineWidth = 0.4;
+  ctx.stroke();
+  // growth rings
+  ctx.strokeStyle = amb.c(pl.tubeDk, 0.6 * a);
+  ctx.lineWidth = 0.1;
+  ctx.beginPath();
+  for (let k = 0; k < n; k++) {
+    for (let j = 1; j <= 4; j++) {
+      const q = j * 0.2, iq = 1 - q;
+      const x = iq * iq * XB[k] + 2 * iq * q * XB[k] + q * q * XA[k], y = 2 * iq * q * (-YB[k] * 0.6) + q * q * YA[k];
+      ctx.moveTo(x - 0.55, y + 0.05); ctx.quadraticCurveTo(x, y + 0.3, x + 0.55, y + 0.05);
+    }
+  }
+  ctx.stroke();
+  // pale (glowing) markings along each tube
+  ctx.fillStyle = amb.c(pl.glDay, 0.85 * a);
+  ctx.beginPath();
+  for (let k = 0; k < n; k++) {
+    for (let j = 0; j < 2; j++) {
+      const q = 0.3 + j * 0.3 + (k & 1) * 0.1, iq = 1 - q;
+      sq(ctx, iq * iq * XB[k] + 2 * iq * q * XB[k] + q * q * XA[k] + 0.2, 2 * iq * q * (-YB[k] * 0.6) + q * q * YA[k], 0.1);
+    }
+  }
+  ctx.fill();
+  // mouths: sealed buds by day, flared rims at night
+  ctx.fillStyle = amb.c(pl.lip, a);
+  ctx.beginPath();
+  for (let k = 0; k < n; k++) oval(ctx, XA[k], YA[k], 0.6 + open * 0.75, 0.32 + open * 0.28, WA[k]);
+  ctx.fill();
+  if (open > 0.15) {
+    ctx.fillStyle = amb.c(pl.throat, a);
+    ctx.beginPath();
+    for (let k = 0; k < n; k++) oval(ctx, XA[k], YA[k], (0.6 + open * 0.75) * 0.62 * open, (0.32 + open * 0.28) * 0.55 * open, WA[k]);
+    ctx.fill();
+    ctx.strokeStyle = amb.c(pl.lipDk, a);
+    ctx.lineWidth = 0.1;
+    ctx.beginPath();
+    for (let k = 0; k < n; k++) {
+      const c = Math.cos(WA[k]), s = Math.sin(WA[k]), rx = 0.6 + open * 0.75;
+      for (let j = -2; j <= 2; j++) {
+        const lx = j * rx * 0.38, L = open * (0.7 + (j & 1) * 0.3);
+        const x0 = XA[k] + lx * c, y0 = YA[k] + lx * s;
+        const ex = x0 + (j * 0.25) * L * c + s * L, ey = y0 + (j * 0.25) * L * s - c * L;
+        ctx.moveTo(x0, y0); ctx.lineTo(ex, ey);
+        if (k * 5 + j + 2 < 40) { XB[20 + k * 5 + j + 2] = ex; YB[20 + k * 5 + j + 2] = ey; }
+      }
+    }
+    ctx.stroke();
+    ctx.fillStyle = amb.c(pl.gl, open * a);
+    ctx.beginPath();
+    for (let i = 0; i < n * 5 && i < 40; i++) sq(ctx, XB[20 + i], YB[20 + i], 0.1);
+    ctx.fill();
+  } else {
+    ctx.fillStyle = amb.c(pl.lipDk, 0.8 * a);
+    ctx.beginPath();
+    for (let k = 0; k < n; k++) oval(ctx, XA[k], YA[k] - 0.05, 0.3, 0.08, WA[k]);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+function tubebloomGlow(ctx, p, world) {
+  const nt = world.night;
+  if (nt < 0.05) return;
+  const U = world.U, gy = world.groundY(p.x), w = p.wither || 0;
+  const open = clamp(nt, 0, 1) * (1 - w * 0.6);
+  const n = tbTubes(p, world, p.rand(), open);
+  const gl = p.genome.glow || P.glowCyan;
+  drawGlow(ctx, gl, p.x, gy - p.height * U * 0.7, p.height * U * 0.75, nt * 0.3 * (1 - w));
+  for (let k = 0; k < n; k++) drawGlow(ctx, gl, p.x + XA[k] * U, gy + YA[k] * U, (0.8 + open * 1.3) * U, open * 0.6 * (1 - w));
+}
+
+// ------------------------------------------------------------ COILSPIRE
+// a helix ribbon twisting round a translucent axis, budding eyed vesicles,
+// crowned with curled feelers around a glowing orb
+function csPal(g, w) {
+  const c1 = wc(g.c1 || P.deepteal, w), c2 = wc(g.c2 || P.sea, w), gl = g.glow || P.glowCyan;
+  return {
+    front: c1, back: mixHex(c1, P.ink, 0.35), axis: mixHex(c2, P.cream, 0.3), pod: c2, podDk: mixHex(c2, c1, 0.5),
+    nuc: mixHex(gl, P.cream, 0.45), pupil: mixHex(c1, P.ink, 0.65), stip: mixHex(c2, P.cream, 0.55), gl, orb: mixHex(gl, c2, 0.3),
+  };
+}
+const CS_N = 30;
+// helix point at q -> XA[62], YA[62]; returns cos of the twist (front > 0)
+function csPt(q, turns, s, h, wd) {
+  const ph = q * turns * TAU;
+  XA[62] = Math.sin(ph) * wd * (1 - q * 0.6) + s * q * q * h * 0.6;
+  YA[62] = -q * h;
+  return Math.cos(ph);
+}
+function coilspireDraw(ctx, p, world, amb) {
+  const g = p.genome, pl = plantPal(p, csPal);
+  const h = p.height, w = p.wither || 0, a = w > 0.5 ? 0.8 : 1;
+  const turns = g.turns || 3;
+  const s = swayOf(p, world, 0.05) + w * 0.5;
+  const wd = 2.4 * Math.min(1, 0.4 + p.growth * 0.6);
+  plantOpen(ctx, p, world);
+  // translucent axis
+  ctx.strokeStyle = amb.c(pl.axis, 0.55 * a);
+  ctx.lineWidth = 0.35;
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(0, -h * 0.5, s * h * 0.6, -h); ctx.stroke();
+  // ribbon: back half, then front half in two widths
+  for (let pass = 0; pass < 3; pass++) {
+    ctx.beginPath();
+    let px = 0, py = 0;
+    for (let i = 1; i <= CS_N; i++) {
+      const q = i / CS_N;
+      const cf = csPt(q - 0.5 / CS_N, turns, s, h, wd);
+      csPt(q, turns, s, h, wd);
+      const front = cf > 0;
+      const want = pass === 0 ? !front : front && (pass === 1 ? q <= 0.5 : q > 0.5);
+      if (want) { ctx.moveTo(px, py); ctx.lineTo(XA[62], YA[62]); }
+      px = XA[62]; py = YA[62];
+    }
+    ctx.strokeStyle = amb.c(pass ? pl.front : pl.back, a);
+    ctx.lineWidth = pass === 0 ? 0.5 : pass === 1 ? 1.1 : 0.7;
+    ctx.stroke();
+  }
+  // stipple along the front of the ribbon
+  ctx.fillStyle = amb.c(pl.stip, 0.8 * a);
+  ctx.beginPath();
+  for (let i = 1; i < CS_N; i += 2) { if (csPt(i / CS_N, turns, s, h, wd) > 0.2) sq(ctx, XA[62] - 0.15, YA[62] - 0.2, 0.08); }
+  ctx.fill();
+  // vesicles budding off the coil
+  let np = 0;
+  for (let i = 3; i < CS_N - 1; i += 4) {
+    const q = i / CS_N;
+    const cf = csPt(q, turns, s, h, wd);
+    const sd = Math.sin(q * turns * TAU) > 0 ? 1 : -1;
+    XB[np] = XA[62] + sd * 1.0 * (1 - q * 0.3); YB[np] = YA[62] + 0.1; WA[np] = sd * (cf > 0 ? 1 : 0.6);
+    np++;
+  }
+  ctx.fillStyle = amb.c(pl.pod, 0.82 * a);
+  ctx.beginPath();
+  for (let j = 0; j < np; j++) oval(ctx, XB[j], YB[j], 0.95 * (1 - j * 0.05), 0.55 * (1 - j * 0.04), WA[j] * 0.45);
+  ctx.fill();
+  ctx.strokeStyle = amb.c(pl.podDk, 0.6 * a);
+  ctx.lineWidth = 0.1;
+  ctx.stroke();
+  ctx.fillStyle = amb.c(pl.nuc, a);
+  ctx.beginPath();
+  for (let j = 0; j < np; j++) dot(ctx, XB[j] + WA[j] * 0.25, YB[j], 0.28 * (1 - j * 0.04));
+  ctx.fill();
+  ctx.fillStyle = amb.c(pl.pupil, a);
+  ctx.beginPath();
+  for (let j = 0; j < np; j += 2) dot(ctx, XB[j] + WA[j] * 0.3, YB[j], 0.13);
+  ctx.fill();
+  // crown: curled feelers around an orb
+  csPt(1, turns, s, h, wd);
+  const tx = XA[62], ty = YA[62];
+  const gr = Math.min(1, p.growth * 1.3);
+  ctx.strokeStyle = amb.c(pl.front, a);
+  ctx.lineWidth = 0.22;
+  ctx.beginPath();
+  for (let j = 0; j < 5; j++) {
+    const an = -PI * 0.92 + j * PI * 0.21 + s * 0.3;
+    const L = (1.5 + (j & 1) * 0.6) * gr;
+    const ex = tx + Math.cos(an) * L * 1.2, ey = ty + Math.sin(an) * L + 0.5 * gr;
+    ctx.moveTo(tx, ty);
+    ctx.quadraticCurveTo(tx + Math.cos(an) * L, ty + Math.sin(an) * L * 1.3 - 0.6, ex, ey);
+    XB[j] = ex; YB[j] = ey;
+  }
+  ctx.stroke();
+  ctx.fillStyle = amb.c(pl.stip, a);
+  ctx.beginPath();
+  for (let j = 0; j < 5; j++) dot(ctx, XB[j], YB[j], 0.17);
+  ctx.fill();
+  ctx.fillStyle = amb.c(pl.orb, a);
+  ctx.beginPath(); dot(ctx, tx, ty - 0.35, 0.95 * gr); ctx.fill();
+  ctx.fillStyle = amb.c(pl.nuc, a);
+  ctx.beginPath(); dot(ctx, tx - 0.25, ty - 0.6, 0.3 * gr); ctx.fill();
+  ctx.restore();
+}
+function coilspireGlow(ctx, p, world) {
+  const n = world.night;
+  if (n < 0.05 || p.growth < 0.3) return;
+  const U = world.U, gy = world.groundY(p.x), w = p.wither || 0;
+  const s = swayOf(p, world, 0.05) + w * 0.5;
+  csPt(1, p.genome.turns || 3, s, p.height, 2.4);
+  const gl = p.genome.glow || P.glowCyan;
+  drawGlow(ctx, gl, p.x + XA[62] * U, gy + (YA[62] - 0.35) * U, 4.5 * U, n * 0.6 * (1 - w));
+  csPt(0.5, p.genome.turns || 3, s, p.height, 2.4);
+  drawGlow(ctx, gl, p.x + XA[62] * 0.5 * U, gy + YA[62] * U, 2.5 * U, n * 0.15 * (1 - w));
+}
+
 // ============================================================ exports
 export const ART = {
   scuttler: { draw: scuttlerDraw, glow: scuttlerGlow },
@@ -2276,4 +3026,11 @@ export const FLORA_ART = {
   snaplure: { draw: snaplureDraw, glow: snaplureGlow },
   dewveil: { draw: dewveilDraw, glow: dewveilGlow },
   gloomcap: { draw: gloomcapDraw, glow: gloomcapGlow },
+  grass: { draw: grassDraw, glow: grassGlow },
+  fanfern: { draw: fanfernDraw, glow: fanfernGlow },
+  bulbstalk: { draw: bulbstalkDraw, glow: bulbstalkGlow },
+  lanternlily: { draw: lanternlilyDraw, glow: lanternlilyGlow },
+  puffcap: { draw: puffcapDraw, glow: puffcapGlow },
+  tubebloom: { draw: tubebloomDraw, glow: tubebloomGlow },
+  coilspire: { draw: coilspireDraw, glow: coilspireGlow },
 };
