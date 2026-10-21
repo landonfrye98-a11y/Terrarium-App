@@ -228,12 +228,14 @@ export class TaskGarden {
     return out;
   }
 
+  // only the seed pod itself (the egg at the soil line) opens the task;
+  // sprouts and finished blooms don't, so they never block creatures
   hit(x, y) {
-    const U = this.world.U;
+    const U = this.world.U, half = Math.max(14, 3.5 * U);
     for (const t of this.tasks) {
+      if (t.state === 'done') continue;
       const p = this.podPos(t, _pos);
-      const top = t.state === 'done' ? 13 * U : t.state === 'active' ? 12 * U : 5 * U;
-      if (x > p.x - 4 * U && x < p.x + 4 * U && y < p.y + 3 * U && y > p.y - top) return t;
+      if (Math.abs(x - p.x) < half && y > p.y - Math.max(20, 5 * U) && y < p.y + 2.5 * U) return t;
     }
     return null;
   }

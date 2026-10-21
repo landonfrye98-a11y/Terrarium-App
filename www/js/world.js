@@ -941,8 +941,18 @@ export class World {
   }
 
   // ------------------------------------------------------------ hit testing
+  // Creatures first, and generously: the nearest one within a finger's
+  // reach of the tap wins, so small or moving ones are easy to catch.
   pick(x, y) {
-    for (let i = this.fauna.length - 1; i >= 0; i--) if (this.fauna[i].hit(this, x, y)) return { type: 'fauna', obj: this.fauna[i] };
+    const U = this.U, finger = Math.max(24, 6 * U);
+    let best = null, bs = Infinity;
+    for (const c of this.fauna) {
+      const s = c.scale * U;
+      const r = Math.max(c.hitR * s, finger);
+      const d = Math.hypot(x - c.x, y - (c.y - c.hitDY * s));
+      if (d < r && d / r < bs) { bs = d / r; best = c; }
+    }
+    if (best) return { type: 'fauna', obj: best };
     for (const e of this.eggs) if (e.hit(this, x, y)) return { type: 'egg', obj: e };
     for (let i = this.flora.length - 1; i >= 0; i--) if (this.flora[i].kind !== 'grass' && this.flora[i].hit(this, x, y)) return { type: 'flora', obj: this.flora[i] };
     return null;

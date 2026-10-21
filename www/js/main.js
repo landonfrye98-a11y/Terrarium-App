@@ -381,6 +381,15 @@ class App {
     w.lastTouch = { x, y };
     clearTimeout(this.touchT);
     this.touchT = setTimeout(() => (w.lastTouch = null), 6000);
+    // creatures win over everything else
+    const hit = w.pick(x, y);
+    if (hit && hit.type === 'fauna') {
+      this.select(hit.obj);
+      this.haptic(5);
+      // a tapped creature answers in its own instrument
+      if (this.settings.tapSounds) this.audio.voice(hit.obj.kind, hit.obj.genome.seed, Math.max(-0.8, Math.min(0.8, x / w.W * 2 - 1)));
+      return;
+    }
     const task = this.garden.hit(x, y);
     if (task) {
       this.ui.open('tasks');
@@ -390,14 +399,7 @@ class App {
       });
       return;
     }
-    const hit = w.pick(x, y);
-    if (hit) {
-      this.select(hit.obj);
-      this.haptic(5);
-      // a tapped creature answers in its own instrument
-      if (hit.type === 'fauna' && this.settings.tapSounds) this.audio.voice(hit.obj.kind, hit.obj.genome.seed, Math.max(-0.8, Math.min(0.8, x / w.W * 2 - 1)));
-      return;
-    }
+    if (hit) { this.select(hit.obj); this.haptic(5); return; }
     if (this.ui.inspecting) this.ui.hideInspector();
     // a touch on the glass: a ripple of light, curious moths, a splash in the pond
     if (w.inPond(x) && y > w.pond.y - 2 * U && y < w.pondBottom(x)) {
