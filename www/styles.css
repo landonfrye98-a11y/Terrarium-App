@@ -288,3 +288,14 @@ body.idle #inspector { opacity: 1; pointer-events: auto; }
 .stepper .tmin:focus { background: rgba(111, 183, 168, 0.18); border-radius: 8px; }
 .stepper .unit { font-size: 12px; color: var(--muted); padding: 0 4px 0 3px; }
 #focus-bar .plus5 { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+
+/* zoom */
+.zoom-btn {
+  position: fixed; left: calc(12px + var(--sal)); bottom: calc(146px + var(--sab));
+  width: auto; height: 38px; padding: 0 14px 0 10px; border-radius: 19px; gap: 6px;
+  display: flex; align-items: center; font-size: 13px;
+  background: rgba(24, 21, 38, 0.7); border: 1px solid var(--panel-line); color: var(--cream);
+}
+.zoom-btn[hidden] { display: none; }
+.zoom-btn svg { width: 18px; height: 18px; }
+@media (max-height: 460px) { .zoom-btn { bottom: auto; top: calc(12px + var(--sat)); } }

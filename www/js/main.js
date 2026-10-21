@@ -34,6 +34,8 @@ const DEFAULTS = {
   perf: 'balanced', awake: true, clockMode: 'analog', h24: false, showSeconds: true, smoothSeconds: true,
   labels: true, sky: 'real', dim: 0, autohide: true, sound: false, tapSounds: true, volume: 0.6, immersive: true, onboarded: false,
 };
+const MAX_ZOOM = 4;
+const NO_CAM = { z: 1, x: 0, y: 0 };
 const LAYER = { ribbonfin: 0, mireeel: 0, scuttler: 1, hookjaw: 2, stiltstrider: 3, mindbloom: 4, bellwisp: 5, petalmoth: 6, lancewing: 7 };
 
 const params = new URLSearchParams(location.search);
@@ -56,6 +58,10 @@ class App {
     if (params.has('perf')) this.settings.perf = params.get('perf');
     this.amb = new Ambient();
     this.skyfx = new SkyFx();
+    // camera: screen = (world - (x, y)) * z. camT is where it's heading.
+    this.cam = { z: 1, x: 0, y: 0 };
+    this.camT = { z: 1, x: 0, y: 0 };
+    this.follow = null;
     this.focusLabel = null;
     this.audio = new Soundscape();
     this.selected = null;
@@ -97,6 +103,7 @@ class App {
     this.garden.rollover();
 
     this.scenery = new Scenery(this.world);
+    this.scenery.cam = this.cam;
     this.clock = new Clock(this.world, this.settings);
     this.ui = new UI(this);
     this.resize();
@@ -129,11 +136,69 @@ class App {
     this.clockLayer = this.makeLayer(this.clockLayer);
     this.plantT = this.clockT = -1e9;
     this.world.layout(this.W, this.H, this.topInset);
+    Object.assign(this.cam, NO_CAM); Object.assign(this.camT, NO_CAM); this.follow = null;
     this.scenery.resize(this.W, this.H, dpr);
     this.garden._slotKey = null;
     this.scenery.update(true);
     this.lastBgT = this.world.t;
     this.render();
+  }
+
+  // ------------------------------------------------------------ camera
+  clampCam(c) {
+    c.z = Math.max(1, Math.min(MAX_ZOOM, c.z));
+    c.x = Math.max(0, Math.min(this.W - this.W / c.z, c.x));
+    c.y = Math.max(0, Math.min(this.H - this.H / c.z, c.y));
+    return c;
+  }
+  setCam(z, x, y, instant) {
+    const t = this.camT;
+    t.z = z; t.x = x; t.y = y;
+    this.clampCam(t);
+    if (instant) Object.assign(this.cam, t);
+  }
+  // zoom keeping the world point under (sx, sy) fixed on screen
+  zoomAt(sx, sy, nz, instant) {
+    const t = this.camT;
+    const wx = t.x + sx / t.z, wy = t.y + sy / t.z;
+    nz = Math.max(1, Math.min(MAX_ZOOM, nz));
+    this.setCam(nz, wx - sx / nz, wy - sy / nz, instant);
+  }
+  resetZoom() { this.follow = null; this.setCam(1, 0, 0); }
+  updateCamera(dt) {
+    const c = this.cam, t = this.camT;
+    const f = this.follow;
+    if (f) {
+      if (f.dead || this.selected !== f || t.z <= 1.01) this.follow = null;
+      else { t.x = f.x - this.W / (2 * t.z); t.y = f.y - 3 * this.world.U - this.H / (2 * t.z); this.clampCam(t); }
+    }
+    if (c.z !== t.z || c.x !== t.x || c.y !== t.y) {
+      const k = 1 - Math.exp(-dt * (f ? 4 : 9));
+      c.z += (t.z - c.z) * k; c.x += (t.x - c.x) * k; c.y += (t.y - c.y) * k;
+      if (Math.abs(c.z - t.z) < 1e-3 && Math.abs(c.x - t.x) < 0.05 && Math.abs(c.y - t.y) < 0.05) Object.assign(c, t);
+    }
+    const zoomed = t.z > 1.01 || c.z > 1.01;
+    if (zoomed !== this._zoomUi) { this._zoomUi = zoomed; document.getElementById('zoom-reset').hidden = !zoomed; }
+  }
+  // paint a cached layer from the current camera; returns that camera
+  paintLayer(layer, paint) {
+    const lc = layer.getContext('2d'), cam = this.cam, k = this.dpr * cam.z;
+    lc.setTransform(1, 0, 0, 1, 0, 0);
+    lc.clearRect(0, 0, layer.width, layer.height);
+    lc.setTransform(k, 0, 0, k, -cam.x * k, -cam.y * k);
+    paint(lc);
+    return { z: cam.z, x: cam.x, y: cam.y };
+  }
+  // a cached layer is crisp only at the zoom it was painted at
+  rezoomed(lc) { return !!lc && Math.abs(lc.z / this.cam.z - 1) > 0.04; }
+  // draw a layer painted from camera lc as seen from the current camera
+  composite(ctx, img, lc, fill) {
+    lc = lc || NO_CAM;
+    const cam = this.cam, d = this.dpr;
+    if (lc.z === cam.z && lc.x === cam.x && lc.y === cam.y) { ctx.drawImage(img, 0, 0); return; }
+    if (fill) { ctx.fillStyle = fill; ctx.fillRect(0, 0, this.canvas.width, this.canvas.height); }
+    const s = cam.z / lc.z;
+    ctx.drawImage(img, (lc.x - cam.x) * cam.z * d, (lc.y - cam.y) * cam.z * d, img.width * s, img.height * s);
   }
 
   makeLayer(c) {
@@ -177,6 +242,7 @@ class App {
     this.last = now;
     this.world.update(dt * (this.warp || 1));
     this.skyfx.update(dt, this.world, this.focusLabel, this.clock.font);
+    this.updateCamera(dt);
     this.render();
     this.frames++;
     this.schedule();
@@ -206,23 +272,30 @@ class App {
   render() {
     const ctx = this.ctx, w = this.world, amb = this.amb, s = w.sky;
     const W = this.W, H = this.H;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.drawImage(this.scenery.bg, 0, 0, W, H);
+    const d = this.dpr, cam = this.cam, k = d * cam.z;
+    // the landscape is redrawn from the camera at most ~20x/s while it
+    // moves; in between, the last image is slid and scaled to match
+    const bc = this.scenery.bgCam || NO_CAM;
+    if ((bc.z !== cam.z || bc.x !== cam.x || bc.y !== cam.y) && performance.now() - (this.bgAt || 0) > 50) {
+      this.scenery.renderBg();
+      this.bgAt = performance.now();
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.composite(ctx, this.scenery.bg, this.scenery.bgCam, s.skyTop);
+    ctx.setTransform(k, 0, 0, k, -cam.x * k, -cam.y * k);
     amb.set(s.tint, s.amt, w.night);
 
     const perf = PERF[this.settings.perf];
     for (const v of w.visitors) v.draw(ctx, w);
     this.skyfx.draw(ctx, w, amb);
     if (perf.plants) {
-      if (w.t - this.plantT >= 1 / perf.plants || w.t < this.plantT) {
+      if (w.t - this.plantT >= 1 / perf.plants || w.t < this.plantT || this.rezoomed(this.plantCam)) {
         this.plantT = w.t;
-        const lc = this.plantLayer.getContext('2d');
-        lc.setTransform(1, 0, 0, 1, 0, 0);
-        lc.clearRect(0, 0, this.plantLayer.width, this.plantLayer.height);
-        lc.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-        this.drawPlants(lc, amb);
+        this.plantCam = this.paintLayer(this.plantLayer, (lc) => this.drawPlants(lc, amb));
       }
-      ctx.drawImage(this.plantLayer, 0, 0, W, H);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.composite(ctx, this.plantLayer, this.plantCam);
+      ctx.setTransform(k, 0, 0, k, -cam.x * k, -cam.y * k);
     } else this.drawPlants(ctx, amb);
     this.drawItems(ctx, amb);
     for (const e of w.eggs) e.draw(ctx, w, amb);
@@ -240,18 +313,18 @@ class App {
     w.particles.draw(ctx, w.night);
 
     if (perf.clock) {
-      if (w.t - this.clockT >= 1 / perf.clock || w.t < this.clockT || this.clock.stale) {
+      if (w.t - this.clockT >= 1 / perf.clock || w.t < this.clockT || this.clock.stale || this.rezoomed(this.clockCam)) {
         this.clockT = w.t;
-        const lc = this.clockLayer.getContext('2d');
-        lc.setTransform(1, 0, 0, 1, 0, 0);
-        lc.clearRect(0, 0, this.clockLayer.width, this.clockLayer.height);
-        lc.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-        this.clock.draw(lc, amb, this.focusInfo(), this.garden.doneToday.length);
+        this.clockCam = this.paintLayer(this.clockLayer, (lc) => this.clock.draw(lc, amb, this.focusInfo(), this.garden.doneToday.length));
       }
-      ctx.drawImage(this.clockLayer, 0, 0, W, H);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.composite(ctx, this.clockLayer, this.clockCam);
+      ctx.setTransform(k, 0, 0, k, -cam.x * k, -cam.y * k);
     } else this.clock.draw(ctx, amb, this.focusInfo(), this.garden.doneToday.length);
     this.clock.drawSeconds(ctx);
     this.drawSelection(ctx);
+    // the glass itself doesn't zoom
+    ctx.setTransform(d, 0, 0, d, 0, 0);
     ctx.drawImage(this.scenery.fg, 0, 0, W, H);
     if (this.settings.dim > 0) {
       ctx.fillStyle = `rgba(0,0,0,${this.settings.dim})`;
@@ -440,26 +513,76 @@ class App {
 
   select(obj) {
     this.selected = obj;
+    if (this.camT.z > 1.2 && obj && obj.genome && obj.scale) this.follow = obj;
     this.ui.showInspector(obj);
   }
 
   // ------------------------------------------------------------ input
+  // one finger taps (and pans when zoomed); two fingers pinch; the mouse
+  // wheel zooms; a double tap zooms in (following a creature if it hits one)
   bindInput() {
-    let down = null;
-    this.canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
-    this.canvas.addEventListener('pointerup', (e) => {
-      if (!down) return;
-      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
-      const dt = performance.now() - down.t;
-      down = null;
-      if (moved < 12 && dt < 600) this.tap(e.clientX, e.clientY);
+    const cv = this.canvas, pts = new Map();
+    let down = null, pinch = null, panned = false;
+    const two = () => { const [a, b] = [...pts.values()]; return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 }; };
+    cv.addEventListener('pointerdown', (e) => {
+      try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size === 1) { down = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, t: performance.now() }; panned = false; }
+      else if (pts.size === 2) {
+        const g = two();
+        pinch = { ...g, z: this.camT.z, cx: this.camT.x, cy: this.camT.y };
+        down = null; this.follow = null; this.gesturing = true;
+      }
     });
+    cv.addEventListener('pointermove', (e) => {
+      const p = pts.get(e.pointerId);
+      if (!p) return;
+      p.x = e.clientX; p.y = e.clientY;
+      if (pinch && pts.size >= 2) {
+        const g = two();
+        const nz = Math.max(1, Math.min(MAX_ZOOM, pinch.z * g.d / pinch.d));
+        const wx = pinch.cx + pinch.mx / pinch.z, wy = pinch.cy + pinch.my / pinch.z;
+        this.setCam(nz, wx - g.mx / nz, wy - g.my / nz, true);
+      } else if (down && pts.size === 1 && this.camT.z > 1.01) {
+        if (panned || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 10) {
+          panned = true; this.follow = null; this.gesturing = true;
+          const t = this.camT;
+          this.setCam(t.z, t.x - (e.clientX - down.lx) / t.z, t.y - (e.clientY - down.ly) / t.z, true);
+        }
+        down.lx = e.clientX; down.ly = e.clientY;
+      }
+    });
+    const end = (e, cancel) => {
+      pts.delete(e.pointerId);
+      if (pts.size < 2) pinch = null;
+      if (pts.size) return;
+      this.gesturing = false;
+      if (down && !panned && !cancel && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 12 && performance.now() - down.t < 600) this.tap(e.clientX, e.clientY);
+      down = null;
+    };
+    cv.addEventListener('pointerup', (e) => end(e, false));
+    cv.addEventListener('pointercancel', (e) => end(e, true));
+    cv.addEventListener('wheel', (e) => { e.preventDefault(); this.follow = null; this.zoomAt(e.clientX, e.clientY, this.camT.z * Math.exp(-e.deltaY * 0.0015), true); }, { passive: false });
+    document.getElementById('zoom-reset').addEventListener('click', () => this.resetZoom());
     window.addEventListener('resize', () => { clearTimeout(this.rz); this.rz = setTimeout(() => this.resize(), 120); });
   }
 
-  tap(x, y) {
+  doubleTap(sx, sy) {
+    if (this.camT.z > 1.3) { this.resetZoom(); return; }
+    const cam = this.camT;
+    const hit = this.world.pick(cam.x + sx / cam.z, cam.y + sy / cam.z);
+    this.zoomAt(sx, sy, 2.5);
+    if (hit && hit.type === 'fauna') { this.select(hit.obj); this.follow = hit.obj; }
+  }
+
+  tap(sx, sy) {
     const w = this.world, U = w.U;
     if (this.ui.openSheet) { this.ui.close(); return; }
+    const now = performance.now(), lt = this.lastTap;
+    if (lt && now - lt.t < 320 && Math.hypot(sx - lt.x, sy - lt.y) < 36) { this.lastTap = null; this.doubleTap(sx, sy); return; }
+    this.lastTap = { t: now, x: sx, y: sy };
+    const cam = this.cam, x = cam.x + sx / cam.z, y = cam.y + sy / cam.z;
+    w.pickZ = cam.z;
     w.lastTouch = { x, y };
     clearTimeout(this.touchT);
     this.touchT = setTimeout(() => (w.lastTouch = null), 6000);

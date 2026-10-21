@@ -4,6 +4,8 @@
 import { P } from './palette.js';
 import { TAU, mulberry32, fbm, mixHex, hexToRgb, rgba, clamp, lerp } from './util.js';
 
+const NO_CAM = { z: 1, x: 0, y: 0 };
+
 export class Scenery {
   constructor(world) {
     this.world = world;
@@ -71,11 +73,16 @@ export class Scenery {
     return true;
   }
 
+  // Drawn from the current camera (zoom), which is remembered in bgCam so the
+  // compositor can slide the image while the camera moves between redraws.
   renderBg() {
     const w = this.world, W = w.W, H = w.H, U = w.U, s = w.sky;
     const ctx = this.bg.getContext('2d');
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.clearRect(0, 0, W, H);
+    const cam = this.cam || NO_CAM, k = this.dpr * cam.z;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.bg.width, this.bg.height);
+    ctx.setTransform(k, 0, 0, k, -cam.x * k, -cam.y * k);
+    this.bgCam = { z: cam.z, x: cam.x, y: cam.y };
 
     // sky
     const g = ctx.createLinearGradient(0, 0, 0, this.horizon + H * 0.05);

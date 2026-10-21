@@ -1012,7 +1012,7 @@ export class World {
   // Creatures first, and generously: the nearest one within a finger's
   // reach of the tap wins, so small or moving ones are easy to catch.
   pick(x, y) {
-    const U = this.U, finger = Math.max(24, 6 * U);
+    const U = this.U, finger = Math.max(24, 6 * U) / (this.pickZ || 1);
     let best = null, bs = Infinity;
     for (const c of this.fauna) {
       const s = c.scale * U;
