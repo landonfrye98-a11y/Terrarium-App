@@ -160,7 +160,10 @@ export class World {
 
   // ------------------------------------------------------------ time & sky
   hourAt(ms) {
+    // fixed skies, each at the peak of its colours
+    if (this.skyMode === 'dawn') return 5.95;
     if (this.skyMode === 'day') return 12.5;
+    if (this.skyMode === 'dusk') return 18.65;
     if (this.skyMode === 'night') return 0.5;
     if (this.forceHour != null) return this.forceHour;
     const d = new Date(ms);
