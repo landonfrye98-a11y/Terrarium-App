@@ -34,7 +34,7 @@ const PERF = {
 const DEFAULTS = {
   perf: 'balanced', awake: true, clockMode: 'analog', h24: false, showSeconds: true, smoothSeconds: true,
   labels: true, sky: 'real', dim: 0, autohide: true, sound: false, tapSounds: true, volume: 0.6, immersive: true, onboarded: false,
-  reminders: false, remindLead: 'ontime', taskOnly: false,
+  reminders: false, remindLead: 'ontime', autoSpawn: true,
 };
 const MAX_ZOOM = 4;
 const NO_CAM = { z: 1, x: 0, y: 0 };
@@ -80,7 +80,7 @@ class App {
     this.world = new World(save?.world?.seed);
     if (params.has('hour')) this.world.forceHour = parseFloat(params.get('hour'));
     this.world.skyMode = this.settings.sky;
-    this.world.taskOnly = !!this.settings.taskOnly;
+    this.world.taskOnly = !this.settings.autoSpawn;
     this.measure();
     this.world.layout(this.W, this.H, this.topInset);
     this.garden = new TaskGarden(this.world, save?.garden);
@@ -93,7 +93,7 @@ class App {
       } catch (e) {
         console.error('Could not restore the glass, starting fresh', e);
         this.world = new World();
-        this.world.taskOnly = !!this.settings.taskOnly;
+        this.world.taskOnly = !this.settings.autoSpawn;
         this.world.layout(this.W, this.H, this.topInset);
         this.garden = new TaskGarden(this.world, null);
         this.world.genesis();
@@ -789,7 +789,7 @@ class App {
         } else this.reminders.sync(this.garden.tasks);
         break;
       case 'remindLead': this.reminders.sync(this.garden.tasks); break;
-      case 'taskOnly': this.world.taskOnly = !!s.taskOnly; if (!boot) this.ui.toast(s.taskOnly ? 'Nothing will grow or be born on its own now. Every new life comes from a finished task.' : 'The glass will grow and breed on its own again.', false, 6000); break;
+      case 'autoSpawn': this.world.taskOnly = !s.autoSpawn; if (!boot) this.ui.toast(s.autoSpawn ? 'Automatic spawning is on. The glass will grow and breed on its own again.' : 'Automatic spawning is off. Every new creature and plant now comes from a task you finish.', false, 6000); break;
       case 'immersive': {
         const SB = plugin('StatusBar');
         if (SB) { (s.immersive ? SB.hide() : SB.show()).catch(() => {}); SB.setOverlaysWebView?.({ overlay: true }).catch(() => {}); }
