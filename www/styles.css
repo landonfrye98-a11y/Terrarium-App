@@ -410,3 +410,6 @@ body.idle #task-card { opacity: 1; pointer-events: auto; }
 .tc-acts .btn { flex: 1; height: 40px; padding: 0 10px; font-size: 13px; }
 .tc-acts .btn.ghost { flex: 0 0 auto; background: transparent; }
 .log .k-weed { color: #e0b65a; }
+
+/* carrying a creature: get the card out of the way */
+body.carrying #inspector { opacity: 0.2; pointer-events: none; transition: opacity 0.2s; }

@@ -61,6 +61,8 @@ Plants follow the same rules. Fanferns, bulbstalks, lantern lilies and puffcaps 
 
 **Creatures evolve.** Every creature carries a genome: palette colours, size, and leg, wing, tendril and eye counts. Offspring inherit it with small drift and the occasional mutation, such as a six-legged strider, a third eye-stalk or a new glow. The field journal's **Family** tab draws every line as a tree: founders, children, grandchildren, who is still alive, and how the rest died, with each creature's temperament. Tap *Family tree* on any creature to jump to its place in it.
 
+**Carry creatures.** Tap a creature to select it, then press and drag it (or hold it a moment) to pick it up. Walkers dropped in mid-air fall to the ground and never land in the pond, swimmers fall back into the water, and fliers just flutter off. Lifting a creature that is being hunted snatches it from the predator. It's also how you move a creature off a seed pod you want to tap.
+
 **Tasks become creatures.** Finishing a task hatches a creature at its pod. The task's words seed the creature's genome, so the same words always produce the same colours. The day's finished tasks stay as blooms until midnight and also orbit inside the clock as amber seeds. Overnight they compost into the soil.
 
 ## Tasks: due dates, steps, and weeds

@@ -502,7 +502,7 @@ export class World {
       }
       if (c.energy > 0.6 || !c.adult) continue;
       const prey = c.findPrey(this);
-      if (!prey) continue;
+      if (!prey || prey._held) continue;
       const h = ECO.hunt[c.kind];
       let rate = h.a * this.huntMult(c, prey) * (c.genome.spd || 1) * (0.75 + 0.5 * c.genome.bold);
       // predators get in each other's way, unless they hunt as a pack
@@ -658,7 +658,7 @@ export class World {
       if (!chance(h.a * (p.kind === 'snaplure' ? 1 + this.night : 1), dt)) continue;
       let prey = null, bd = Infinity;
       for (const c of this.fauna) {
-        if (c.kind !== preyKind || c.dead || c.lured || c._doomed) continue;
+        if (c.kind !== preyKind || c.dead || c.lured || c._doomed || c._held) continue;
         const d = Math.abs(c.x - p.x) / (0.5 + this.contrast(c)) / (1 + (c.genome.gl || 0) * this.night);
         if (d < bd) { bd = d; prey = c; }
       }
@@ -796,6 +796,8 @@ export class World {
 
     for (const c of this.fauna) {
       if (c.dead) continue;
+      if (c._held) { c.phase += dt * 9; continue; } // kicking in your fingers
+      if (c._fall) { this.fallTick(c, dt); continue; }
       c.move(this, dt);
       // the fungus makes its hosts stagger
       if (c.inf) c.x = clamp(c.x + Math.sin(this.t * 6 + c.phase) * this.U * 1.5 * dt, 2 * this.U, this.W - 2 * this.U);
@@ -1112,6 +1114,84 @@ export class World {
       this.emit('unlock', k);
     }
     return { creature, newly };
+  }
+
+  // ------------------------------------------------------------ carrying
+  // You can pick a creature up and move it. Walkers drop to the ground,
+  // swimmers fall back into the pond, fliers just fly off.
+  static GROUND = ['scuttler', 'stiltstrider', 'hookjaw'];
+  static WATER = ['ribbonfin', 'mireeel'];
+  canCarry(c) { return !!c && !c.dead && CREATURES[c.kind] && c.kind !== 'mindbloom'; }
+
+  // returns the predator it was snatched from, if any
+  grab(c) {
+    if (!this.canCarry(c)) return null;
+    c._held = true;
+    c._fall = false;
+    let saved = null;
+    for (const o of this.fauna) if (o.hunt && o.hunt.prey === c) { saved = o; this.endHunt(o); o.state = 'idle'; o.timer = 2; }
+    if (c.lured) { if (c.lured.lured === c) { saved = c.lured; c.lured.lured = null; } c.lured = null; }
+    if (c.hunt) this.endHunt(c);
+    c._doomed = null;
+    c.target = null;
+    if (saved && !this.offline) this.log(`You snatched ${c.name} the ${SPECIES[c.kind].name.toLowerCase()} away from ${saved.name ? saved.name + ' the ' + SPECIES[saved.kind].name.toLowerCase() : 'a ' + SPECIES[saved.kind].name.toLowerCase()}.`, 'hunt');
+    return saved;
+  }
+
+  carry(c, x, y) {
+    const U = this.U;
+    c.x = clamp(x, 3 * U, this.W - 3 * U);
+    c.y = clamp(y, this.topInset + 4 * U, this.inPond(c.x) ? this.pondBottom(c.x) - U : this.groundY(c.x));
+    if (c.depth) c.depth = 0;
+  }
+
+  drop(c) {
+    if (!c._held) return;
+    c._held = false;
+    const U = this.U, P0 = this.pond;
+    c.state = c.kind === 'petalmoth' ? 'fly' : 'idle';
+    c.timer = 1.5;
+    c.tx = c.x; c.ty = c.y;
+    c.perch = null;
+    c.vx = 0; c.vy = 0;
+    if (World.GROUND.includes(c.kind)) {
+      // land on the bank, never in the pond
+      if (this.inPond(c.x, 4 * U)) c.x = c.x < (P0.x0 + P0.x1) / 2 ? P0.x0 - 6 * U : P0.x1 + 6 * U;
+      c.tx = c.x;
+      if (c.y < this.groundY(c.x) - U) { c._fall = true; c._vy = 0; }
+      else c.y = this.groundY(c.x);
+    } else if (World.WATER.includes(c.kind)) {
+      c.x = clamp(c.x, P0.x0 + 4 * U, P0.x1 - 4 * U);
+      c.tx = c.x;
+      const floor = this.pondBottom(c.x) - 2 * U;
+      if (c.y < P0.y) { c._fall = true; c._vy = 0; }
+      else c.y = Math.min(c.y, floor);
+      c.ty = Math.max(P0.y + 3 * U, Math.min(c.y, floor));
+    } else {
+      // fliers stay up in the air
+      c.y = Math.min(c.y, this.groundY(c.x) - 4 * U);
+      c.ty = c.y;
+    }
+  }
+
+  fallTick(c, dt) {
+    const U = this.U;
+    c._vy = (c._vy || 0) + 90 * U * dt;
+    c.y += c._vy * dt;
+    c.phase += dt * 12;
+    const water = World.WATER.includes(c.kind);
+    const floor = water ? this.pond.y + 2 * U : this.groundY(c.x);
+    if (c.y < floor) return;
+    c._fall = false;
+    if (water) {
+      c.ty = Math.max(this.pond.y + 4 * U, Math.min(this.pond.y + 8 * U, this.pondBottom(c.x) - 2 * U));
+      c.y = this.pond.y + 2.5 * U;
+      if (!this.offline) this.splash(c.x, this.pond.y, Math.min(1, 0.4 + c._vy / (120 * U)));
+    } else {
+      c.y = floor;
+      if (!this.offline) this.particles.burst(c.x, floor, 7, { type: 'spark', color: this.sky.ground, speed: 10 * U, life: 0.7, g: 40 * U });
+    }
+    c._vy = 0;
   }
 
   // ------------------------------------------------------------ family tree

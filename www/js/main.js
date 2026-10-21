@@ -543,6 +543,12 @@ class App {
 
   select(obj) {
     this.selected = obj;
+    // the first time, say that creatures can be carried
+    if (obj && this.world.canCarry(obj)) {
+      let seen = false;
+      try { seen = localStorage.getItem('glasswild.carryHint') === '1'; localStorage.setItem('glasswild.carryHint', '1'); } catch {}
+      if (!seen) setTimeout(() => this.ui.toast('Tip: press and drag a selected creature to carry it somewhere else.', false, 5000), 700);
+    }
     if (this.camT.z > 1.2 && obj && obj.genome && obj.scale) this.follow = obj;
     this.ui.showInspector(obj);
   }
@@ -552,13 +558,48 @@ class App {
   // wheel zooms; a double tap zooms in (following a creature if it hits one)
   bindInput() {
     const cv = this.canvas, pts = new Map();
-    let down = null, pinch = null, panned = false;
+    let down = null, pinch = null, panned = false, grab = null;
+    // the selected creature can be picked up: press on it and drag, or hold
+    const toWorld = (sx, sy) => { const c = this.cam; return { x: c.x + sx / c.z, y: c.y + sy / c.z }; };
+    const onSelected = (sx, sy) => {
+      const c = this.selected, w = this.world;
+      if (!w.canCarry(c) || !w.fauna.includes(c) || this.ui.openSheet) return false;
+      const p = toWorld(sx, sy);
+      const U = w.U, k = c.scale;
+      const r = Math.max(c.hitR * U * k * 1.7, 26 / this.cam.z);
+      return Math.hypot(p.x - c.x, p.y - (c.y - c.hitDY * U * k)) < r;
+    };
+    const lift = () => {
+      if (!grab || grab.lifted) return;
+      const w = this.world, c = grab.c;
+      const saved = w.grab(c);
+      grab.lifted = true;
+      document.body.classList.add('carrying');
+      this.follow = null;
+      this.gesturing = true;
+      this.haptic(saved ? [15, 30, 15] : 15);
+      if (saved) this.ui.toast(`You snatched ${c.name} away from ${saved.name || 'the ' + SPECIES[saved.kind].name.toLowerCase()}!`, false, 3500);
+      w.particles.burst(c.x, c.y, 6, { type: 'spark', color: c.genome.c1, glow: c.genome.glow, speed: 7 * w.U, life: 0.7, g: -2 * w.U });
+      if (this.settings.tapSounds) this.audio.voice(c.kind, c.genome.seed, 0);
+    };
+    const release = () => {
+      if (!grab) return;
+      clearTimeout(grab.timer);
+      if (grab.lifted) { this.world.drop(grab.c); this.haptic(6); this.gesturing = false; document.body.classList.remove('carrying'); }
+      grab = null;
+    };
     const two = () => { const [a, b] = [...pts.values()]; return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 }; };
     cv.addEventListener('pointerdown', (e) => {
       try { cv.setPointerCapture(e.pointerId); } catch { /* ignore */ }
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (pts.size === 1) { down = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, t: performance.now() }; panned = false; }
-      else if (pts.size === 2) {
+      if (pts.size === 1) {
+        down = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, t: performance.now() }; panned = false;
+        if (onSelected(e.clientX, e.clientY)) {
+          const p = toWorld(e.clientX, e.clientY), c = this.selected;
+          grab = { c, dx: c.x - p.x, dy: c.y - p.y, lifted: false, timer: setTimeout(lift, 220) };
+        }
+      } else if (pts.size === 2) {
+        release();
         const g = two();
         pinch = { ...g, z: this.camT.z, cx: this.camT.x, cy: this.camT.y };
         down = null; this.follow = null; this.gesturing = true;
@@ -573,6 +614,13 @@ class App {
         const nz = Math.max(1, Math.min(MAX_ZOOM, pinch.z * g.d / pinch.d));
         const wx = pinch.cx + pinch.mx / pinch.z, wy = pinch.cy + pinch.my / pinch.z;
         this.setCam(nz, wx - g.mx / nz, wy - g.my / nz, true);
+      } else if (grab && pts.size === 1) {
+        if (!grab.lifted && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) lift();
+        if (grab.lifted) {
+          const p = toWorld(e.clientX, e.clientY);
+          this.world.carry(grab.c, p.x + grab.dx, p.y + grab.dy);
+          panned = true; // not a tap
+        }
       } else if (down && pts.size === 1 && this.camT.z > 1.01) {
         if (panned || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 10) {
           panned = true; this.follow = null; this.gesturing = true;
@@ -586,6 +634,7 @@ class App {
       pts.delete(e.pointerId);
       if (pts.size < 2) pinch = null;
       if (pts.size) return;
+      if (grab) { const was = grab.lifted; release(); if (was) { down = null; return; } }
       this.gesturing = false;
       if (down && !panned && !cancel && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 12 && performance.now() - down.t < 600) this.tap(e.clientX, e.clientY);
       down = null;

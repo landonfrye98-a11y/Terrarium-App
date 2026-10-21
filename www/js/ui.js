@@ -773,7 +773,7 @@ export class UI {
       $('#insp-latin').textContent = `${sp.name} · ${sp.latin}`;
       const stage = obj.stage;
       const doing = { eat: 'feeding', feed: 'feeding', perch: 'resting on the clock', walk: 'wandering', fly: 'flying', dig: 'burrowing', tunnel: 'tunnelling', rise: 'surfacing', jump: 'leaping!', swim: 'swimming', stalk: 'stalking', pounce: 'pouncing!', digest: 'digesting', soar: 'soaring', dive: 'diving!', climb: 'climbing', lurk: 'lurking', strike: 'striking!', idle: obj.rest > 0.5 ? 'asleep' : 'pausing' }[obj.state] || 'drifting';
-      facts = [['Stage', stage], ['Age', fmtAge(obj.age)], ['Generation', obj.gen], ['Now', obj._trance > 0 ? 'entranced' : kind === 'bellwisp' ? (w.night > 0.5 ? 'glowing' : 'basking') : kind === 'mindbloom' ? 'watching' : doing]];
+      facts = [['Stage', stage], ['Age', fmtAge(obj.age)], ['Generation', obj.gen], ['Now', obj._held ? 'being carried' : obj._fall ? 'falling!' : obj._trance > 0 ? 'entranced' : kind === 'bellwisp' ? (w.night > 0.5 ? 'glowing' : 'basking') : kind === 'mindbloom' ? 'watching' : doing]];
       $('#insp-energy').style.width = `${clamp(obj.energy, 0, 1) * 100}%`;
       $('#insp-origin').textContent = obj.origin;
       const r = w.lineage[obj.id];
