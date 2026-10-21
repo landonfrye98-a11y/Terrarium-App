@@ -2,7 +2,7 @@
 // palette; offspring inherit it with small drift and the occasional mutation,
 // so lineages slowly develop their own look over days.
 import { P, FAMILIES } from './palette.js';
-import { SPECIES, ECO, makeName } from './species.js';
+import { TRAITS, SPECIES, ECO, makeName } from './species.js';
 
 // Optional richer artwork, registered by art.js when it is present.
 let ART = {};
@@ -37,7 +37,10 @@ export class Creature {
     // (helps breeding, but shows you to predators at night)
     if (g.spd == null) g.spd = rr(0.85, 1.15);
     if (g.gl == null) g.gl = g.glow || g.eye ? rr(0.2, 0.8) : 0;
-    if (!this.life) this.life = rr(C.lifeRange[0], C.lifeRange[1]);
+    // temperament (see TRAITS)
+    for (const t of TRAITS) if (g[t.k] == null) g[t.k] = rr(0.2, 0.8);
+    this.pid ??= null;
+    if (!this.life) this.life = rr(C.lifeRange[0], C.lifeRange[1]) * (1.2 - 0.4 * g.fec);
     this.inf ||= 0;
     this.digest ||= 0;
     this._trance = 0;
@@ -59,9 +62,9 @@ export class Creature {
 
   lifeTick(world, dt) {
     this.age += dt;
-    // faster bodies burn more
-    const spd = this.genome.spd || 1;
-    this.energy -= dt / this.constructor.metabolism * spd * spd;
+    // faster bodies burn more; shy ones forage poorly, watchful ones fret
+    const g = this.genome, spd = g.spd || 1;
+    this.energy -= dt / this.constructor.metabolism * spd * spd * (1.12 - 0.24 * g.bold) * (0.92 + 0.16 * g.vig);
     if (this.energy <= 0) {
       this.energy = 0;
       this._starve = (this._starve || 0) + dt;
@@ -87,8 +90,15 @@ export class Creature {
     g.size = clamp(g.size, 0.78, 1.3);
     g.spd = clamp(g.spd ?? 1, 0.7, 1.4);
     g.gl = clamp((g.gl ?? 0) + (r() * 2 - 1) * 0.04, 0, 1);
+    for (const t of TRAITS) g[t.k] = clamp((g[t.k] ?? 0.5) + (r() * 2 - 1) * 0.05, 0, 1);
     let mutation = null;
     if (r() < 0.12) mutation = this.constructor.mutate(g, r);
+    else if (r() < 0.08) {
+      // a temperament leap
+      const t = pick(TRAITS, r), up = g[t.k] < 0.5 ? r() < 0.7 : r() < 0.3;
+      g[t.k] = clamp(g[t.k] + (up ? 1 : -1) * rr(0.2, 0.35), 0, 1);
+      mutation = `a ${up ? t.more : t.less} temperament`;
+    }
     return { genome: g, mutation };
   }
   static mutate(g, r) {
@@ -101,8 +111,20 @@ export class Creature {
 
   // set by the mindbloom's pulse, counted down here
   trance(world, dt) {
-    if (this._trance > 0) this._trance -= dt;
+    if (this._trance > 0) this._trance -= dt * (1 + 1.5 * this.genome.vig); // watchful minds shake it off
     return this._trance > 0;
+  }
+
+  // social creatures drift towards their kin, loners away from them
+  herd(world, tx, range) {
+    const soc = this.genome.soc;
+    let s = 0, n = 0;
+    for (const c of world.fauna) if (c !== this && c.kind === this.kind && Math.abs(c.x - this.x) < range) { s += c.x; n++; }
+    if (!n) return tx;
+    const kx = s / n;
+    if (soc > 0.4) return lerp(tx, kx + (tx - this.x) * 0.3, (soc - 0.4) * 1.1);
+    if (soc < 0.3 && Math.abs(kx - this.x) < range * 0.3) return tx + Math.sign(this.x - kx || 1) * (0.3 - soc) * range;
+    return tx;
   }
 
   hit(world, x, y) {
@@ -213,17 +235,18 @@ export class Scuttler extends Creature {
 
   choose(world) {
     const U = world.U;
-    const food = world.nearestItem(this.x, 70 * U, (it) => it.grounded && !it.inWater);
+    const bold = this.genome.bold;
+    const food = world.nearestItem(this.x, (45 + 50 * bold) * U, (it) => it.grounded && !it.inWater);
     if (food && (this.energy < 0.85 || Math.random() < 0.5)) {
       this.target = food; this.tx = food.x; this.state = 'walk'; return;
     }
-    if (Math.random() < 0.22 && this.adult) {
+    if (Math.random() < 0.1 + 0.3 * (1 - bold) && this.adult) {
       this.state = 'dig'; this.digTo = rr(4, 11);
       this.tx = clamp(this.x + rr(-35, 35) * U, 5 * U, world.W - 5 * U);
       if (world.inPond(this.tx, 6 * U)) this.tx = this.x;
       return;
     }
-    this.tx = clamp(this.x + rr(-30, 30) * U, 4 * U, world.W - 4 * U);
+    this.tx = clamp(this.herd(world, this.x + rr(-30, 30) * U, 60 * U), 4 * U, world.W - 4 * U);
     this.state = 'walk';
   }
 
@@ -365,7 +388,7 @@ export class Petalmoth extends Creature {
       const a = rr(-Math.PI * 0.95, -Math.PI * 0.05);
       this.perch = a; this.tx = c.cx + Math.cos(a) * c.R; this.ty = c.cy + Math.sin(a) * c.R; this.state = 'fly'; return;
     }
-    this.tx = rr(6 * U, world.W - 6 * U);
+    this.tx = clamp(this.herd(world, rr(6 * U, world.W - 6 * U), 90 * U), 6 * U, world.W - 6 * U);
     this.ty = rr(world.H * 0.22, world.groundBase - 12 * U);
     this.state = 'fly';
     this.timer = rr(5, 12);
@@ -720,7 +743,7 @@ export class Ribbonfin extends Creature {
     if (this.trance(world, dt)) { this.vx *= 0.9; this.vy *= 0.9; }
     else {
       if (this.timer <= 0 || dist2(this.x, this.y, this.tx || 0, this.ty || 0) < (2 * U) ** 2) {
-        this.tx = rr(p.x0 + 4 * U, p.x1 - 4 * U);
+        this.tx = clamp(this.herd(world, rr(p.x0 + 4 * U, p.x1 - 4 * U), 30 * U), p.x0 + 4 * U, p.x1 - 4 * U);
         const bot = world.pondBottom(this.tx);
         this.ty = rr(p.y + 2.5 * U, Math.max(p.y + 3 * U, bot - 2.5 * U));
         this.timer = rr(3, 9);
@@ -933,7 +956,7 @@ export class Stiltstrider extends Creature {
       }
     }
     this.target = null;
-    this.tx = clamp(this.x + rr(-40, 40) * U, 8 * U, world.W - 8 * U);
+    this.tx = clamp(this.herd(world, this.x + rr(-40, 40) * U, 70 * U), 8 * U, world.W - 8 * U);
     if (world.inPond(this.tx, 6 * U)) this.tx = this.x - (this.tx - this.x);
     this.state = 'walk';
   }
@@ -1282,7 +1305,7 @@ export class Hookjaw extends Predator {
       this.state = this.state === 'eat' && this.timer > 0 ? 'eat' : 'digest';
     } else {
       if (this.state !== 'walk' && this.timer <= 0) {
-        this.tx = clamp(this.x + rr(-35, 35) * U, 6 * U, world.W - 6 * U);
+        this.tx = clamp(this.herd(world, this.x + rr(-35, 35) * U, 70 * U), 6 * U, world.W - 6 * U);
         if (world.inPond(this.tx, 6 * U)) this.tx = this.x;
         this.state = 'walk';
       }

@@ -73,11 +73,13 @@
     <header><h2>Field journal</h2><button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
     <div class="tabs" role="tablist">
       <button role="tab" data-tab="species" class="on">Species</button>
-      <button role="tab" data-tab="living">Inhabitants</button>
+      <button role="tab" data-tab="living">Living</button>
+      <button role="tab" data-tab="family">Family</button>
       <button role="tab" data-tab="log">Log</button>
     </div>
     <div class="tab-body" id="tab-species"></div>
     <div class="tab-body" id="tab-living" hidden></div>
+    <div class="tab-body" id="tab-family" hidden></div>
     <div class="tab-body" id="tab-log" hidden></div>
   </section>
 
@@ -135,9 +137,13 @@
       <h4 id="insp-name"></h4>
       <p class="latin" id="insp-latin"></p>
       <dl id="insp-facts"></dl>
+      <div id="insp-traits" class="traits" hidden></div>
       <div class="meter"><span id="insp-energy"></span></div>
       <p class="origin" id="insp-origin"></p>
-      <button class="btn accent insp-btn" id="insp-hunt" hidden></button>
+      <div class="insp-acts">
+        <button class="btn accent insp-btn" id="insp-hunt" hidden></button>
+        <button class="btn insp-btn" id="insp-family" hidden>Family tree</button>
+      </div>
     </div>
   </aside>
 

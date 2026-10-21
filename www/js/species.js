@@ -150,3 +150,26 @@ export function makeName(r = Math.random) {
   if (r() < 0.35) n += p(B) + p(C);
   return n.charAt(0).toUpperCase() + n.slice(1);
 }
+
+// Inherited temperament: each gene runs 0..1 and trades one survival edge for
+// another, so the mix in the glass drifts with whatever is killing things.
+//   bold  finds more food, but is easier to catch
+//   soc   herds with kin: safety in numbers, but crowds spread fungus
+//   vig   watchful: slips predators and trances, but burns more energy
+//   fec   breeds more readily, but lives shorter
+export const TRAITS = [
+  { k: 'bold', lo: 'Shy', hi: 'Bold', more: 'bolder', less: 'shyer' },
+  { k: 'soc', lo: 'Loner', hi: 'Social', more: 'more social', less: 'more solitary' },
+  { k: 'vig', lo: 'Dreamy', hi: 'Watchful', more: 'more watchful', less: 'dreamier' },
+  { k: 'fec', lo: 'Long-lived', hi: 'Prolific', more: 'more prolific', less: 'longer-lived' },
+];
+
+// a few words for a temperament, only for the genes that stand out
+export function temperament(g, sep = ' · ') {
+  const w = [];
+  for (const t of TRAITS) {
+    const v = g[t.k] ?? 0.5;
+    if (v > 0.64) w.push(t.hi); else if (v < 0.36) w.push(t.lo);
+  }
+  return w.length ? w.join(sep) : 'Even-tempered';
+}

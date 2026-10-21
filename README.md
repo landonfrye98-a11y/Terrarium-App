@@ -38,6 +38,13 @@ Nothing in the glass is created from nothing.
 - **The gloomcap fungus** spreads where creatures crowd together. Its victims stagger, die, and sprout pale mushrooms that seed more of it.
 - **Seed banks** hold dormant eggs and spores in the soil. They bring a species back when it dwindles. Outsiders only arrive if a species has been gone for days.
 - **Traits matter.** Speed costs energy. Glowing helps a creature breed but shows it to predators at night. Colours that match the background help it hide. Over days, lineages adapt.
+- **Temperament is inherited.** Each creature carries four behaviour genes, and each one trades one way of surviving for another:
+  - *Shy ↔ Bold.* Bold creatures forage further and burrow less, but are easier to catch.
+  - *Loner ↔ Social.* Social creatures herd with their kin, which dilutes predation but spreads fungus. Social predators hunt as a pack instead of getting in each other's way.
+  - *Dreamy ↔ Watchful.* Watchful creatures slip predators and shake off the mindbloom's trance, but burn more energy.
+  - *Long-lived ↔ Prolific.* Prolific creatures breed readily and die younger.
+
+  Offspring drift a little from their parents, and now and then a temperament leaps. Selection does the rest: in a glass full of hunters petalmoths turn watchful, and where fungus spreads scuttlers turn into loners.
 
 `npm test` runs `tools/sim.mjs`, which plays seeded terrariums forward for days and checks the invariants:
 - nutrient is conserved;
@@ -45,11 +52,14 @@ Nothing in the glass is created from nothing.
 - the census matches a recount;
 - populations stay within the performance ceilings;
 - extinctions get rescued;
-- a 4-day catch-up stays fast.
+- a 4-day catch-up stays fast;
+- every living creature has a family record, and the records stay bounded.
+
+`node tools/sim.mjs --traits` also prints where each species' temperament drifted to.
 
 Plants follow the same rules. Fanferns, bulbstalks, lantern lilies and puffcaps grow from fertile soil, feed the animals, wither, and rot back into the ground. Tubeblooms appear after 6 finished tasks and coilspires after 10.
 
-**Creatures evolve.** Every creature carries a genome: palette colours, size, and leg, wing, tendril and eye counts. Offspring inherit it with small drift and the occasional mutation, such as a six-legged strider, a third eye-stalk or a new glow. Generations are recorded in the field journal.
+**Creatures evolve.** Every creature carries a genome: palette colours, size, and leg, wing, tendril and eye counts. Offspring inherit it with small drift and the occasional mutation, such as a six-legged strider, a third eye-stalk or a new glow. The field journal's **Family** tab draws every line as a tree: founders, children, grandchildren, who is still alive, and how the rest died, with each creature's temperament. Tap *Family tree* on any creature to jump to its place in it.
 
 **Tasks become creatures.** Finishing a task hatches a creature at its pod. The task's words seed the creature's genome, so the same words always produce the same colours. The day's finished tasks stay as blooms until midnight and also orbit inside the clock as amber seeds. Overnight they compost into the soil.
 

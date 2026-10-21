@@ -52,6 +52,11 @@ function check(w, ctx) {
     if ((recount[k] || 0) > SPECIES[k].cap) fail(ctx, `${k} over ceiling: ${recount[k]}`);
   }
   if (w.fauna.length > 40) fail(ctx, `total fauna ${w.fauna.length}`);
+  // family tree: everyone alive has a record, and the record stays bounded
+  for (const c of w.fauna) if (!w.lineage[c.id]) { fail(ctx, `${c.kind} ${c.id} missing from the lineage`); break; }
+  const nl = Object.keys(w.lineage).length;
+  if (nl > 320 + w.fauna.length * 9) fail(ctx, `lineage has ${nl} records`);
+  for (const c of w.fauna) for (const k of ['bold', 'soc', 'vig', 'fec']) if (!(c.genome[k] >= 0 && c.genome[k] <= 1)) { fail(ctx, `${c.kind}.${k} = ${c.genome[k]}`); return; }
 }
 
 function runOffline(seed, done) {
@@ -99,6 +104,10 @@ function runOffline(seed, done) {
   const catchMs = performance.now() - t0;
   check(w, `${ctx} after catchUp`);
   stats.causes = causes;
+  // where temperament drifted to, per species
+  stats.traits = {};
+  for (const c of w.fauna) { const t = (stats.traits[c.kind] ||= { n: 0, bold: 0, soc: 0, vig: 0, fec: 0 }); t.n++; for (const k of ['bold', 'soc', 'vig', 'fec']) t[k] += c.genome[k]; }
+  stats.lineage = Object.keys(w.lineage).length;
   return { w, series, stats, tickMs: tickMs / ticks, catchMs };
 }
 
@@ -137,6 +146,8 @@ for (const done of DONES) {
     const s = summary(r.series, [...kinds, 'flora']);
     for (const k in s) { (agg[k] ||= []).push(s[k]); }
     for (const k in r.stats.maxGone) (agg['gone:' + k] ||= []).push(r.stats.maxGone[k]);
+    for (const k in r.stats.traits) { const a = (agg.traits ||= {})[k] ||= { n: 0, bold: 0, soc: 0, vig: 0, fec: 0 }; for (const f in a) a[f] += r.stats.traits[k][f]; }
+    agg.lineage = Math.max(agg.lineage || 0, r.stats.lineage);
     for (const k in r.stats.causes) agg.causes = { ...(agg.causes || {}), [k]: ((agg.causes || {})[k] || 0) + r.stats.causes[k] };
   }
   if (!QUIET) {
@@ -146,6 +157,10 @@ for (const done of DONES) {
       const g = agg['gone:' + k];
       console.log(`  ${k.padEnd(13)} mean ${(a.reduce((x, y) => x + y.mean, 0) / a.length).toFixed(1).padStart(5)}  range ${Math.min(...a.map((x) => x.min))}–${Math.max(...a.map((x) => x.max))}  cv ${(a.reduce((x, y) => x + y.cv, 0) / a.length).toFixed(2)}${g ? `  longest absence ${Math.max(...g)}h` : ''}`);
     }
+  }
+  if (args.traits && agg.traits) {
+    console.log(`  temperament after ${DAYS} days (started near 0.5), largest family record ${agg.lineage}:`);
+    for (const k in agg.traits) { const a = agg.traits[k]; console.log(`    ${k.padEnd(13)} n=${String(a.n).padStart(3)}  bold ${(a.bold / a.n).toFixed(2)}  social ${(a.soc / a.n).toFixed(2)}  watchful ${(a.vig / a.n).toFixed(2)}  prolific ${(a.fec / a.n).toFixed(2)}`); }
   }
   if (args.causes && agg.causes) console.log('  deaths/day by cause:', Object.entries(agg.causes).sort().map(([k, v]) => `${k} ${(v / SEEDS / DAYS).toFixed(1)}`).join(', '));
   if (args.csv && lastSeries) {

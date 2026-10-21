@@ -9,7 +9,7 @@
 // carcasses and seed banks but is never created, except through inject()
 // (finished tasks, arrivals), which the ledger records in stats.nIn.
 import { P, skyAt, nightAt } from './palette.js';
-import { SPECIES, FAUNA_KINDS, PREDATORS, ECO, makeName } from './species.js';
+import { SPECIES, FAUNA_KINDS, PREDATORS, ECO, TRAITS, makeName } from './species.js';
 import { Plant, sproutWeights, pickKind, FLORA_KINDS } from './flora.js';
 import { CREATURES, Egg, Gloamwhale } from './fauna.js';
 import { Particles } from './particles.js';
@@ -21,6 +21,9 @@ const HR = 3600;
 const SAVE_V = 2;
 const MAX_FAUNA = 36; // drawing budget for the whole glass
 const ORDER_COOLDOWN = 20 * 60 * 1000; // between hunts you command
+const LINEAGE_MAX = 320; // family records kept
+const LINEAGE_DEPTH = 8; // generations of ancestry kept behind the living
+const LINEAGE_FADE = 36 * HR * 1000; // how long a dead branch lingers
 const RESIST = { stiltstrider: 0.2, hookjaw: 0.2, mireeel: 0.3, lancewing: 0.3 };
 const LAYER = { scuttler: 0, stiltstrider: 0, hookjaw: 0, petalmoth: 1, bellwisp: 1, lancewing: 1, mindbloom: 1, ribbonfin: 2, mireeel: 2 };
 
@@ -35,6 +38,7 @@ export class World {
     this.ripples = [];
     this.soil = new Float64Array(SOIL_N).fill(0.55);
     this.bank = {};
+    this.lineage = {};
     this.stats = { tasksDone: 0, births: 0, deaths: 0, discovered: {}, maxGen: {}, created: Date.now(), nextWhale: 0, n0: 0, nIn: 0, goneAt: {}, pendingArrivals: [], nextArrival: 0 };
     this.logs = [];
     this.particles = new Particles(240);
@@ -211,7 +215,7 @@ export class World {
     if (this.fauna.length + this.eggs.length >= MAX_FAUNA) return false;
     const crowd = (this.count(c.kind) + this.countEggs(c.kind)) / this.ceil(c.kind);
     if (crowd >= 1) return false;
-    return Math.random() < 1 - crowd ** 4 + (c.genome.gl || 0) * 0.1;
+    return Math.random() < (1 - crowd ** 4 + (c.genome.gl || 0) * 0.1) * (0.55 + 0.9 * (c.genome.fec ?? 0.5));
   }
 
   nearestItem(x, range, filter) {
@@ -241,6 +245,7 @@ export class World {
     this.pop[kind] = (this.pop[kind] || 0) + 1;
     this._sortDirty = true;
     this.discover(kind);
+    this.record(c);
     return c;
   }
 
@@ -272,7 +277,7 @@ export class World {
     const { genome, mutation } = parent.childGenome();
     const nb = Math.min(parent.n * 0.5, this.nStruct(parent.kind, genome));
     parent.n -= nb;
-    const c = this.spawn(parent.kind, { x: parent.x, y: parent.y, ...o, genome, n: nb, gen: parent.gen + 1, origin: `Child of ${parent.name}`, age: 0, energy: o.energy ?? 0.55 });
+    const c = this.spawn(parent.kind, { x: parent.x, y: parent.y, ...o, genome, n: nb, gen: parent.gen + 1, pid: parent.id, origin: `Child of ${parent.name}`, age: 0, energy: o.energy ?? 0.55 });
     this.stats.births++;
     this.act.births++;
     this.stats.maxGen[c.kind] = Math.max(this.stats.maxGen[c.kind] || 1, c.gen);
@@ -285,7 +290,7 @@ export class World {
     const { genome, mutation } = parent.childGenome();
     const nb = Math.min(parent.n * 0.5, this.nStruct(parent.kind, genome));
     parent.n -= nb;
-    const e = new Egg({ species: parent.kind, genome, gen: parent.gen + 1, parentName: parent.name, mutation, n: nb, ...o });
+    const e = new Egg({ species: parent.kind, genome, gen: parent.gen + 1, parentName: parent.name, pid: parent.id, mutation, n: nb, ...o });
     // a share of every clutch goes dormant in the soil: the seed bank
     if (Math.random() < 0.12) { this.bankAdd(parent.kind, genome, nb); return null; }
     this.eggs.push(e);
@@ -304,7 +309,7 @@ export class World {
       this.bankAdd(e.species, e.genome, e.n || 0);
       return;
     }
-    const c = this.spawn(e.species, { x: e.x, y: e.y, genome: e.genome, n: e.n || 0, gen: e.gen, origin: e.origin || `Child of ${e.parentName}`, energy: 0.6 });
+    const c = this.spawn(e.species, { x: e.x, y: e.y, genome: e.genome, n: e.n || 0, gen: e.gen, pid: e.pid ?? null, origin: e.origin || `Child of ${e.parentName}`, energy: 0.6 });
     if (c.kind === 'ribbonfin') c.y = Math.min(c.y, this.pondBottom(c.x) - 2 * this.U);
     if (c.kind === 'petalmoth') c.y = Math.min(c.y, this.groundY(c.x) - 4 * this.U);
     this.stats.births++;
@@ -337,6 +342,8 @@ export class World {
     c.dead = true;
     c.cause = cause;
     this._dirty = true;
+    const rec = this.lineage[c.id];
+    if (rec) { rec.d = this.simTime; rec.cause = cause; }
     this.pop[c.kind] = Math.max(0, (this.pop[c.kind] || 1) - 1);
     if (this.pop[c.kind] === 0 && this.countEggs(c.kind) === 0) this.stats.goneAt[c.kind] = this.simTime;
     if (c.hunt) this.endHunt(c);
@@ -452,7 +459,7 @@ export class World {
     const n = b.n / b.count;
     b.n -= n;
     b.count--;
-    const genome = b.g[(Math.random() * b.g.length) | 0];
+    const genome = { ...b.g[(Math.random() * b.g.length) | 0] };
     if (b.count <= 0) { this.depositN(rr(0, this.W), b.n); delete this.bank[kind]; }
     return { genome, n };
   }
@@ -496,8 +503,9 @@ export class World {
       const prey = c.findPrey(this);
       if (!prey) continue;
       const h = ECO.hunt[c.kind];
-      let rate = h.a * this.huntMult(c, prey) * (c.genome.spd || 1);
-      rate /= 1 + 0.5 * (this.count(c.kind) - 1); // predators get in each other's way
+      let rate = h.a * this.huntMult(c, prey) * (c.genome.spd || 1) * (0.75 + 0.5 * c.genome.bold);
+      // predators get in each other's way, unless they hunt as a pack
+      rate /= 1 + (1.5 - c.genome.soc) * 0.5 * (this.count(c.kind) - 1);
       if (!chance(rate, dt)) continue;
       this.act.hunts++;
       if (this.offline) { this.predate(c, prey); continue; }
@@ -522,6 +530,15 @@ export class World {
     if (prey.inf) m *= 2;
     if (prey.stage === 'juvenile' || prey.stage === 'elder') m *= 1.6;
     m /= g.spd || 1;
+    // temperament: bold ones wander into the open, watchful ones see it coming
+    m *= (0.65 + 0.7 * g.bold) * (1.3 - 0.6 * g.vig);
+    // safety in numbers, for those who keep close to their kin
+    if (g.soc > 0.2) {
+      let kin = 0;
+      const r = 14 * this.U;
+      for (const o of this.fauna) if (o !== prey && o.kind === prey.kind && Math.abs(o.x - prey.x) < r && Math.abs(o.y - prey.y) < r) kin++;
+      m /= 1 + g.soc * Math.min(kin, 3) * 0.3;
+    }
     return m;
   }
 
@@ -715,6 +732,7 @@ export class World {
       if (!crowd) continue;
       let rate = F.beta * (i + m * 2) * crowd + (d > F.crowd * 1.6 ? F.spont * crowd : 0);
       if (RESIST[c.kind]) rate *= RESIST[c.kind]; // big bodies shrug most of it off
+      rate *= 0.4 + 0.8 * c.genome.soc; // huddlers catch it from each other
       if (chance(rate, dt)) {
         c.inf = 1;
         c._infLife = rr(F.lifeMin, F.lifeMax);
@@ -845,6 +863,7 @@ export class World {
     this.huntTick(dt);
     if (this._tickN % 5 === 0) this.fungusTick(dt * 5);
     if (this._tickN % 30 === 0) {
+      if (this._tickN % 600 === 0) this.pruneLineage();
       const sdt = dt * 30;
       this.diffuse(sdt);
       this.bankTick(sdt);
@@ -1080,6 +1099,74 @@ export class World {
     return { creature, newly };
   }
 
+  // ------------------------------------------------------------ family tree
+  // Every creature gets a small record that outlives it, so the journal can
+  // draw who descended from whom. Kept bounded by pruneLineage().
+  record(c) {
+    const old = this.lineage[c.id];
+    if (old) return old;
+    const g = c.genome, t = {};
+    for (const k of TRAITS) t[k.k] = Math.round(g[k.k] * 100) / 100;
+    const r = {
+      id: c.id, pid: c.pid ?? null, name: c.name, kind: c.kind, gen: c.gen,
+      b: Math.round(this.simTime - c.age * 1000), d: 0, cause: '', kids: 0,
+      c1: g.c1, c2: g.c2 || g.c1, o: c.pid ? '' : c.origin, t,
+    };
+    this.lineage[c.id] = r;
+    const p = c.pid && this.lineage[c.pid];
+    if (p) p.kids++;
+    return r;
+  }
+
+  // older saves have no records: start one for everyone alive, and link
+  // children to living parents by name where the origin says who they were
+  adoptLineage() {
+    const byName = {};
+    for (const c of this.fauna) byName[c.kind + ':' + c.name] = c;
+    for (const c of this.fauna) {
+      if (this.lineage[c.id]) continue;
+      if (c.pid == null) {
+        const m = /^Child of (.+)$/.exec(c.origin || '');
+        const p = m && byName[c.kind + ':' + m[1]];
+        if (p && p !== c) c.pid = p.id;
+      }
+    }
+    for (const c of this.fauna) {
+      if (c.pid && !this.lineage[c.pid]) { const p = this.fauna.find((o) => o.id === c.pid); if (p) this.record(p); }
+      this.record(c);
+    }
+  }
+
+  // Keep the living, a few generations of their ancestors, and the recently
+  // dead; everything else fades out of the record.
+  pruneLineage() {
+    const L = this.lineage;
+    const keep = new Set();
+    const anc = (id, depth) => {
+      for (let r = L[id], i = 0; r && i <= depth; r = L[r.pid], i++) keep.add(r.id);
+    };
+    for (const c of this.fauna) anc(c.id, LINEAGE_DEPTH);
+    for (const e of this.eggs) if (e.pid) anc(e.pid, LINEAGE_DEPTH - 1);
+    const now = this.simTime;
+    const rest = [];
+    for (const id in L) {
+      if (keep.has(id)) continue;
+      if (now - L[id].d < LINEAGE_FADE) rest.push(L[id]);
+      else delete L[id];
+    }
+    // over budget: drop the longest-dead first
+    if (keep.size + rest.length > LINEAGE_MAX) {
+      rest.sort((a, b) => a.d - b.d);
+      for (const r of rest.slice(0, keep.size + rest.length - LINEAGE_MAX)) delete L[r.id];
+    }
+  }
+
+  rename(c, name) {
+    c.name = name;
+    const r = this.lineage[c.id];
+    if (r) r.name = name;
+  }
+
   // ------------------------------------------------------------ persistence
   serialize() {
     const r4 = (v) => Math.round(v * 1e4) / 1e4;
@@ -1093,6 +1180,7 @@ export class World {
       items: this.items.map((i) => ({ id: i.id, type: i.type, x: i.x / this.W, y: i.y / this.H, vy: 0, color: i.color, n: i.n, food: i.food, age: i.age, grounded: i.grounded, inWater: i.inWater })),
       soil: Array.from(this.soil, r4),
       bank: this.bank,
+      lineage: Object.values(this.lineage),
       stats: this.stats,
       logs: this.logs.slice(-140),
     };
@@ -1116,7 +1204,10 @@ export class World {
     this.stats = { ...this.stats, ...d.stats };
     this.bank = d.bank || {};
     this.logs = d.logs || [];
+    this.lineage = {};
+    for (const r of d.lineage || []) this.lineage[r.id] = r;
     if (v < 2) this.migrate1to2();
+    this.adoptLineage();
     for (const c of this.fauna) if (c.kind === 'scuttler' || c.kind === 'stiltstrider' || c.kind === 'hookjaw') c.y = this.groundY(c.x);
     // re-baseline the ledger: saving rounds the soil a little
     this.stats.n0 = this.totalN() - (this.stats.nIn || 0);

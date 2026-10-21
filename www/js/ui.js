@@ -1,6 +1,6 @@
 // DOM side of the app: dock, sheets, the task list, the field journal,
 // settings, the creature inspector and toasts.
-import { SPECIES, FAUNA_KINDS, PREDATORS } from './species.js';
+import { SPECIES, FAUNA_KINDS, PREDATORS, TRAITS, temperament } from './species.js';
 import { CREATURES } from './fauna.js';
 import { Plant } from './flora.js';
 import { Ambient, escapeHtml, fmtAge, fmtDuration, mulberry32, hashStr, clamp } from './util.js';
@@ -15,6 +15,7 @@ const PERF_HINT = {
   smooth: 'Up to 60 frames a second at full resolution. Prettiest, hungriest.',
 };
 const FLORA_ORDER = ['fanfern', 'bulbstalk', 'lanternlily', 'puffcap', 'tubebloom', 'coilspire', 'snaplure', 'dewveil', 'gloomcap'];
+const CAUSE = { eaten: 'eaten', age: 'old age', starved: 'starved', fungus: 'fungus', burst: 'burst into spores' };
 const RING_C = 2 * Math.PI * 15; // circumference of the focus-bar progress ring (r=15)
 
 export class UI {
@@ -258,19 +259,102 @@ export class UI {
       this.renderJournal();
     }));
     this.tab = 'species';
-    $('#tab-living').addEventListener('click', (e) => {
+    const go = (e) => {
+      if (e.target.closest('summary')) return;
       const row = e.target.closest('[data-id]');
       if (!row) return;
       const c = this.world.find(row.dataset.id);
-      if (c) { this.close(); this.app.select(c); }
-    });
+      if (c && !c.dead) { this.close(); this.app.select(c); }
+    };
+    $('#tab-living').addEventListener('click', go);
+    $('#tab-family').addEventListener('click', go);
+    // remember which family branches are open between renders
+    this.famOpen = new Set();
+    $('#tab-family').addEventListener('toggle', (e) => {
+      const id = e.target.dataset?.root;
+      if (id) e.target.open ? this.famOpen.add(id) : this.famOpen.delete(id);
+    }, true);
   }
 
   renderJournal() {
-    for (const k of ['species', 'living', 'log']) $(`#tab-${k}`).hidden = k !== this.tab;
+    $$('#sheet-journal .tabs button').forEach((x) => x.classList.toggle('on', x.dataset.tab === this.tab));
+    for (const k of ['species', 'living', 'family', 'log']) $(`#tab-${k}`).hidden = k !== this.tab;
     if (this.tab === 'species') this.renderSpecies();
     else if (this.tab === 'living') this.renderLiving();
+    else if (this.tab === 'family') this.renderFamily();
     else this.renderLog();
+  }
+
+  // open the journal on one creature's family
+  showFamily(id) {
+    this.tab = 'family';
+    this.familyFocus = id;
+    this.open('journal');
+  }
+
+  // ------------------------------------------------------------ family tree
+  renderFamily() {
+    const w = this.world;
+    const L = w.lineage;
+    const kids = {};
+    const roots = [];
+    for (const id in L) {
+      const r = L[id];
+      if (r.pid && L[r.pid]) (kids[r.pid] ||= []).push(r);
+      else roots.push(r);
+    }
+    for (const k in kids) kids[k].sort((a, b) => a.b - b.b);
+    // per family: how many alive, how many in all, generations spanned
+    const alive = new Map(w.fauna.map((c) => [c.id, c]));
+    const sum = (r) => {
+      const s = { alive: alive.has(r.id) ? 1 : 0, all: 1, g0: r.gen, g1: r.gen, last: Math.max(r.b, r.d) };
+      for (const k of kids[r.id] || []) { const t = sum(k); s.alive += t.alive; s.all += t.all; s.g1 = Math.max(s.g1, t.g1); s.last = Math.max(s.last, t.last); }
+      r._s = s;
+      return s;
+    };
+    for (const r of roots) sum(r);
+    // find the focused creature's family, and open its branch
+    const focus = this.familyFocus;
+    this.familyFocus = null;
+    let focusRoot = null;
+    if (focus && L[focus]) { let r = L[focus]; while (r.pid && L[r.pid]) r = L[r.pid]; focusRoot = r.id; this.famOpen.add(r.id); }
+    const fams = roots.filter((r) => r._s.all > 1 || r._s.alive);
+    fams.sort((a, b) => (b.id === focusRoot) - (a.id === focusRoot) || b._s.alive - a._s.alive || b._s.all - a._s.all || b._s.last - a._s.last);
+    if (!this.famOpen.size) for (const r of fams.slice(0, 2)) if (r._s.all > 1) this.famOpen.add(r.id);
+
+    const chip = (t) => {
+      const v = t ?? {};
+      let out = '';
+      for (const T of TRAITS) {
+        const x = v[T.k] ?? 0.5;
+        if (x > 0.64) out += `<u>${T.hi}</u>`; else if (x < 0.36) out += `<u class="lo">${T.lo}</u>`;
+      }
+      return out;
+    };
+    const node = (r, depth) => {
+      const live = alive.has(r.id);
+      const sub = kids[r.id];
+      const state = live ? `${fmtAge(alive.get(r.id).age)} old` : CAUSE[r.cause] || 'gone';
+      const me = r.id === focus ? ' me' : '';
+      let html = `<li class="${live ? 'alive' : 'dead'}${me}"><div class="fn"${live ? ` data-id="${r.id}"` : ''}><i style="background:${r.c1};border-color:${r.c2}"></i><b>${escapeHtml(r.name)}</b><small>${state}</small>${chip(r.t)}</div>`;
+      if (sub) html += `<ul${depth >= 6 ? ' class="flat"' : ''}>${sub.map((k) => node(k, depth + 1)).join('')}</ul>`;
+      return html + '</li>';
+    };
+    const shown = fams.slice(0, 24);
+    const html = shown.map((r) => {
+      const s = r._s, sp = SPECIES[r.kind]?.name || r.kind;
+      const gens = s.g1 > s.g0 ? `gens ${s.g0}–${s.g1}` : `gen ${s.g0}`;
+      const head = `<summary><i style="background:${r.c1};border-color:${r.c2}"></i><div><b>House of ${escapeHtml(r.name)}</b><span>${sp} · ${s.alive ? `${s.alive} living` : 'faded'} · ${s.all} in all · ${gens}</span>${r.o ? `<span class="o">${escapeHtml(r.o)}</span>` : ''}</div></summary>`;
+      return `<details class="fam${s.alive ? '' : ' faded'}" data-root="${r.id}"${this.famOpen.has(r.id) ? ' open' : ''}>${head}<ul class="tree">${node(r, 0)}</ul></details>`;
+    }).join('');
+    const el = $('#tab-family');
+    el.innerHTML = html
+      ? `<p class="hint">Every creature carries its parents' temperament, a little changed. Bold ones find more food but get caught; social ones are safer in a crowd but share the fungus; watchful ones slip away but burn more; prolific ones breed fast and die young. Tap a living one to find it.</p>${html}`
+      : '<p class="hint">No families yet. When a creature has young, its line will grow here.</p>';
+    if (focus) {
+      const me = el.querySelector('li.me > .fn');
+      if (me) requestAnimationFrame(() => me.scrollIntoView({ block: 'center' }));
+    }
   }
 
   renderSpecies() {
@@ -292,10 +376,23 @@ export class UI {
       let meta;
       if (flora) meta = `${fc[k] || 0} growing`;
       else if (k === 'gloamwhale') meta = 'Visitor · passes overhead';
-      else meta = `${counts[k] || 0} living · generation ${w.stats.maxGen[k] || 1} · eats ${s.diet.toLowerCase()}`;
+      else {
+        meta = `${counts[k] || 0} living · generation ${w.stats.maxGen[k] || 1} · eats ${s.diet.toLowerCase()}`;
+        const t = this.speciesTemper(k);
+        if (t) meta += `<br>Temperament so far: ${t}`;
+      }
       return `<div class="species"><canvas data-k="${k}" width="168" height="168"></canvas><div><h4>${s.name}</h4><p class="latin">${s.latin}</p><p>${s.notes}</p><p class="meta">${meta}</p></div></div>`;
     }).join('');
     $$('canvas[data-k]', el).forEach((cv) => this.portrait(cv, cv.dataset.k));
+  }
+
+  // the average temperament of a species, in words
+  speciesTemper(kind) {
+    const g = {}; let n = 0;
+    for (const c of this.world.fauna) if (c.kind === kind) { n++; for (const t of TRAITS) g[t.k] = (g[t.k] || 0) + c.genome[t.k]; }
+    if (!n) return '';
+    for (const t of TRAITS) g[t.k] /= n;
+    return temperament(g, ', ').toLowerCase();
   }
 
   renderLiving() {
@@ -306,7 +403,7 @@ export class UI {
     $('#tab-living').innerHTML = (list.length ? list.map((c) => `
       <div class="living" data-id="${c.id}"><i style="background:${c.genome.c1}"></i>
         <div><b>${escapeHtml(c.name)}</b> <small style="color:var(--muted)">${SPECIES[c.kind].name}</small>
-        <span>${c.stage} · ${fmtAge(c.age)} old · ${escapeHtml(c.origin)}</span></div><em>gen ${c.gen}</em></div>`).join('')
+        <span>${c.stage} · ${fmtAge(c.age)} old · ${temperament(c.genome, ', ').toLowerCase()} · ${escapeHtml(c.origin)}</span></div><em>gen ${c.gen}</em></div>`).join('')
       : '<p class="hint">Nothing is alive in the glass right now. Give it time.</p>')
       + (eggs ? `<p class="hint">${eggs} egg${eggs === 1 ? '' : 's'}, cocoon${eggs === 1 ? '' : 's'} and spore${eggs === 1 ? '' : 's'} waiting to hatch.</p>` : '');
   }
@@ -448,7 +545,11 @@ export class UI {
       const sel = this.app.selected;
       if (!sel || !sel.name || !sel.genome || !CREATURES[sel.kind]) return;
       const n = prompt('Give this creature a name', sel.name);
-      if (n && n.trim()) { sel.name = n.trim().slice(0, 24); this.showInspector(sel); }
+      if (n && n.trim()) { this.world.rename(sel, n.trim().slice(0, 24)); this.showInspector(sel); }
+    });
+    $('#insp-family').addEventListener('click', () => {
+      const obj = this.inspecting;
+      if (obj) this.showFamily(obj.species ? obj.pid : obj.id);
     });
   }
 
@@ -480,6 +581,8 @@ export class UI {
       facts = [['Stage', stage], ['Age', fmtAge(obj.age)], ['Generation', obj.gen], ['Now', obj._trance > 0 ? 'entranced' : kind === 'bellwisp' ? (w.night > 0.5 ? 'glowing' : 'basking') : kind === 'mindbloom' ? 'watching' : doing]];
       $('#insp-energy').style.width = `${clamp(obj.energy, 0, 1) * 100}%`;
       $('#insp-origin').textContent = obj.origin;
+      const r = w.lineage[obj.id];
+      if (r?.kids) facts.push(['Young', r.kids]);
     } else if (isEgg) {
       $('#insp-name').textContent = { petalmoth: 'Cocoon', stiltstrider: 'Egg', bellwisp: 'Drifting spore', ribbonfin: 'Roe' }[kind] || 'Egg';
       $('#insp-latin').textContent = `${sp.name} · ${sp.latin}`;
@@ -500,8 +603,23 @@ export class UI {
     if (!isEgg && obj.inf > 0) facts.push(['Health', 'infected by gloomcap fungus']);
     if (isCreature && obj.digest > 0 && !obj.hunt) facts.push(['Digesting', fmtAge(obj.digest)]);
     this.huntButton(obj, isEgg);
+    this.traitBars(isCreature || isEgg ? obj.genome : null, full);
+    const fb = $('#insp-family');
+    fb.hidden = !(isCreature || (isEgg && obj.pid && w.lineage[obj.pid]));
+    if (!fb.hidden) fb.textContent = isEgg ? 'Parent’s family' : 'Family tree';
     $('#insp-facts').innerHTML = facts.map(([a, b]) => `<dt>${a}</dt><dd>${escapeHtml(String(b))}</dd>`).join('');
     if (full || isCreature) this.portrait($('#insp-portrait'), isEgg ? kind : obj);
+  }
+
+  // four little sliders for the temperament genes
+  traitBars(g, full) {
+    const el = $('#insp-traits');
+    el.hidden = !g;
+    if (!g || !full) return;
+    el.innerHTML = TRAITS.map((t) => {
+      const v = clamp(g[t.k] ?? 0.5, 0, 1);
+      return `<div class="tr"><span>${t.lo}</span><b><i style="left:${(v * 100).toFixed(0)}%"></i></b><span>${t.hi}</span></div>`;
+    }).join('');
   }
 
   // predators and traps can be sent to hunt, every so often
