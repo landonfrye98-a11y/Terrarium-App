@@ -62,6 +62,8 @@ function check(w, ctx) {
 function runOffline(seed, done) {
   const { w, advance } = makeWorld(seed, done);
   w.offline = true;
+  // --blight=0.9 plays a neglected task's weeds over a third of the glass
+  if (args.blight) for (let b = 2; b < 8; b++) w.blight[b] = +args.blight;
   const ctx = `seed=${seed} done=${done}`;
   const series = [];
   const gone = {};

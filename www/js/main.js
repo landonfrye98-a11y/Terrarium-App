@@ -85,6 +85,7 @@ class App {
     if (save?.world) {
       try {
         this.world.restore(save.world);
+        this.garden.updateWeeds(); // the hours away happen under today's weeds
         away = this.world.catchUp((Date.now() - (save.savedAt || Date.now())) / 1000);
       } catch (e) {
         console.error('Could not restore the glass, starting fresh', e);
@@ -259,7 +260,9 @@ class App {
     // sort draw order once a second
     this.focusTick();
     if (w._sortDirty) { w.fauna.sort((a, b) => LAYER[a.kind] - LAYER[b.kind]); w._sortDirty = false; }
-    this.garden.tick();
+    const worse = this.garden.tick();
+    if (worse) this.weedNotice(worse);
+    this.updateBadge();
     if (dayKey() !== this.day) { this.day = dayKey(); this.garden.rollover(); }
     this.ui.tickTasks();
     if (this.ui.inspecting) this.ui.updateInspector(false);
@@ -490,9 +493,36 @@ class App {
     this.haptic([30, 80, 30, 80, 60]);
   }
 
+  // a neglected task's weed got worse
+  weedNotice(t) {
+    const st = this.garden.stage(t);
+    const msg = [null,
+      `“${t.title}” is overdue. Something thorny is pushing out of its pod.`,
+      `The weeds on “${t.title}” are spreading. The soil around it is souring and nothing will sprout there.`,
+      `“${t.title}” has gone feral. Its brambles are choking the plants nearby and scratching the creatures that pass.`,
+      `Blight! Spores are drifting off “${t.title}”. Creatures near it can catch the gloomcap fungus.`][st];
+    if (!msg) return;
+    this.world.log(msg, 'weed');
+    if (this.running) { this.ui.toast(msg, st >= 3, 6500); this.haptic(st >= 3 ? [20, 60, 20] : 10); }
+    this.ui.renderTasks();
+  }
+
+  // the red number on the home-screen icon: overdue tasks only
+  updateBadge() {
+    const n = this.garden.overdueCount;
+    if (n === this.badgeN) return;
+    this.badgeN = n;
+    try {
+      if (n) navigator.setAppBadge?.(n)?.catch?.(() => {});
+      else navigator.clearAppBadge?.()?.catch?.(() => {});
+    } catch {}
+    this.ui.renderTasks();
+  }
+
   completeTask(id) {
     const res = this.garden.complete(id);
     if (!res) return;
+    this.ui.hideTaskCard(id);
     this.audio.chime();
     this.haptic([12, 60, 18]);
     if (res.creature) this.ui.toast(`“${res.task.title}” bloomed into ${res.creature.name}, a ${SPECIES[res.creature.kind].name}.`, true, 6000);
@@ -597,15 +627,13 @@ class App {
     }
     const task = this.garden.hit(x, y);
     if (task) {
-      this.ui.open('tasks');
-      requestAnimationFrame(() => {
-        const li = document.querySelector(`#sheet-tasks li[data-id="${task.id}"]`);
-        if (li) { li.scrollIntoView({ block: 'center' }); li.animate([{ background: 'rgba(255,201,107,0.25)' }, { background: 'transparent' }], { duration: 1400 }); }
-      });
+      this.haptic(5);
+      this.ui.showTaskCard(task);
       return;
     }
     if (hit) { this.select(hit.obj); this.haptic(5); return; }
     if (this.ui.inspecting) this.ui.hideInspector();
+    if (this.ui.cardTask) this.ui.hideTaskCard();
     // a touch on the glass: a ripple of light, curious moths, a splash in the pond
     if (w.inPond(x) && y > w.pond.y - 2 * U && y < w.pondBottom(x)) {
       w.splash(x, w.pond.y, 0.6);
@@ -650,6 +678,7 @@ class App {
     const gone = this.hiddenAt ? (Date.now() - this.hiddenAt) / 1000 : 0;
     this.hiddenAt = 0;
     if (gone > 20) {
+      this.garden.updateWeeds();
       const res = this.world.catchUp(gone);
       if (res && gone > 15 * 60) this.awayToast(res);
       this.garden.rollover();

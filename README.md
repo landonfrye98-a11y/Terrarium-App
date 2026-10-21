@@ -46,7 +46,7 @@ Nothing in the glass is created from nothing.
 
   Offspring drift a little from their parents, and now and then a temperament leaps. Selection does the rest: in a glass full of hunters petalmoths turn watchful, and where fungus spreads scuttlers turn into loners.
 
-`npm test` runs `tools/sim.mjs`, which plays seeded terrariums forward for days and checks the invariants:
+`npm test` runs `tools/tasks.test.mjs` (due-date parsing, weeds, snoozing, steps, old saves) and then `tools/sim.mjs`, which plays seeded terrariums forward for days and checks the invariants:
 - nutrient is conserved;
 - there are no NaNs;
 - the census matches a recount;
@@ -55,13 +55,28 @@ Nothing in the glass is created from nothing.
 - a 4-day catch-up stays fast;
 - every living creature has a family record, and the records stay bounded.
 
-`node tools/sim.mjs --traits` also prints where each species' temperament drifted to.
+`node tools/sim.mjs --blight=0.6` plays a feral weed over a third of the glass, to see what neglect costs. `node tools/sim.mjs --traits` also prints where each species' temperament drifted to.
 
 Plants follow the same rules. Fanferns, bulbstalks, lantern lilies and puffcaps grow from fertile soil, feed the animals, wither, and rot back into the ground. Tubeblooms appear after 6 finished tasks and coilspires after 10.
 
 **Creatures evolve.** Every creature carries a genome: palette colours, size, and leg, wing, tendril and eye counts. Offspring inherit it with small drift and the occasional mutation, such as a six-legged strider, a third eye-stalk or a new glow. The field journal's **Family** tab draws every line as a tree: founders, children, grandchildren, who is still alive, and how the rest died, with each creature's temperament. Tap *Family tree* on any creature to jump to its place in it.
 
 **Tasks become creatures.** Finishing a task hatches a creature at its pod. The task's words seed the creature's genome, so the same words always produce the same colours. The day's finished tasks stay as blooms until midnight and also orbit inside the clock as amber seeds. Overnight they compost into the soil.
+
+## Tasks: due dates, steps, and weeds
+
+- **Due dates in plain words.** End a task with when it's due and the date comes off the title: `collect trash sunday`, `call vet tomorrow 3pm`, `taxes by oct 24`, `rent 11/1`, `review in 3 days`, `clean garage this weekend`. Titles like "Sunday school prep" are left alone. You can also set or change a date with the Today / Tomorrow / Weekend chips or the date and time pickers.
+- **Steps.** Put steps after a colon (`Clean the house sun: make to do list, collect trash, vacuum`), paste a list (the first line becomes the task, every other line a step), or add them one by one. A task with steps grows a stalk with a bud for each step. Each finished step opens its bud, and the last one blooms the whole task into a creature, a bigger one for a bigger job.
+- **A list you can scan.** The Tasks sheet groups everything into Growing now, Overdue, Today, Upcoming and Someday, with counts. Tap a task to unfold its steps, due date, focus target, snooze, rename and compost. When more than six tasks are planted, only the urgent ones (active, overdue, due today) keep a label in the glass.
+- **Work from the glass.** Tap a seed pod or its weeds and a card opens right there. From it you can tick steps, add one, change the date, start focus, snooze, or finish.
+- **Neglect grows weeds, gently at first:**
+  1. *Day one overdue:* thorny shoots push out of the pod. Only ugly.
+  2. *Days 1–3:* the weed spreads and sours its patch. Plants there start dying and nothing new sprouts.
+  3. *Days 3–7:* it goes feral. Brambles reach the neighbouring patches and their thorns wear down creatures that live among them.
+  4. *A week or more:* blight. Its spores give nearby creatures the gloomcap fungus.
+
+  Tasks with no date get a week from when they were last touched (started, edited or a step ticked), wilting for the last few days of it. Finishing a task kills its weed at once. Snoozing makes the weed die back over a few hours. *Pull the weed* drops the task altogether. The Tasks button turns red with the number of overdue tasks, and so does the app icon on Android when Glasswild is installed.
+
 
 **Time keeps passing.** The sky follows the real time of day: dawn, haze-teal day, gold afternoon, magenta dusk and a bioluminescent night. When you reopen the app, the simulation catches up on the hours you were away and tells you what happened.
 

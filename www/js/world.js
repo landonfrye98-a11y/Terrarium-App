@@ -60,6 +60,7 @@ export class World {
     this.eggPop = {};
     this.bk = Array.from({ length: NB }, () => []);
     this.mush = new Float32Array(NB);
+    this.blight = new Float32Array(NB); // weeds of neglected tasks, set by the task garden
     this.act = { births: 0, deaths: 0, pollinations: 0, hunts: 0, kills: 0, pulses: 0, splashes: 0, hatches: 0 };
     this.hunting = 0;
     this.traps = [];
@@ -727,7 +728,14 @@ export class World {
       if (c.dead || c.inf || c.kind === 'mindbloom') continue;
       const b = this.bucketOf(c.x), l = LAYER[c.kind];
       let d = 0, i = 0, m = 0;
-      for (let k = b - 1; k <= b + 1; k++) { if (k < 0 || k >= NB) continue; d += dens[l][k]; i += inf[l][k]; if (l === 0) m += this.mush[k]; }
+      let bl = 0;
+      for (let k = b - 1; k <= b + 1; k++) { if (k < 0 || k >= NB) continue; d += dens[l][k]; i += inf[l][k]; if (l === 0) m += this.mush[k]; bl += Math.max(0, this.blight[k] - 0.65); }
+      // a blighted weed's spores infect even the uncrowded
+      if (bl > 0 && c.kind !== 'mindbloom' && chance(bl * (RESIST[c.kind] || 1) / (5 * HR), dt)) {
+        c.inf = 1; c._infLife = rr(F.lifeMin, F.lifeMax); outbreak = c;
+        this._blightCase = true;
+        continue;
+      }
       const crowd = Math.max(0, d - F.crowd);
       if (!crowd) continue;
       let rate = F.beta * (i + m * 2) * crowd + (d > F.crowd * 1.6 ? F.spont * crowd : 0);
@@ -741,6 +749,7 @@ export class World {
     }
     if (outbreak && this.t - (this._lastOutbreakLog || -1e9) > 1800) {
       this._lastOutbreakLog = this.t;
+      if (this._blightCase) { this._blightCase = false; this.log(`${outbreak.name} the ${SPECIES[outbreak.kind].name.toLowerCase()} breathed in blight spores from a neglected task's weeds and caught the gloomcap fungus.`, 'fungus'); return; }
       this.log(`${outbreak.name} the ${SPECIES[outbreak.kind].name.toLowerCase()} has caught the gloomcap fungus. Crowded creatures pass it to each other.`, 'fungus');
     }
   }
@@ -850,6 +859,9 @@ export class World {
         c.energy -= dt / (3 * HR);
         if (c.inf > (c._infLife || 3 * HR)) { this.killFauna(c, 'fungus'); continue; }
       }
+      // thorns of feral weeds wear down whatever lives among them
+      const bl = this.blight[this.bucketOf(c.x)];
+      if (bl > 0.45 && c.kind !== 'mindbloom') c.energy -= (bl - 0.3) * dt / (2 * HR);
       c.lifeTick(this, dt);
     }
     for (const e of this.eggs) if (!e.gone) e.tick(this, dt);
@@ -909,7 +921,7 @@ export class World {
     let best = null, bs = -1;
     for (let k = 0; k < 6; k++) {
       const x = rr(0.03, 0.97) * this.W;
-      if (this.inPond(x, 3 * this.U)) continue;
+      if (this.inPond(x, 3 * this.U) || this.blight[this.bucketOf(x)] > 0.3) continue;
       let crowd = 0;
       for (const p of this.flora) { const d = Math.abs(p.x - x) / this.U; if (d < 6) crowd += (6 - d); }
       const s = this.fertAt(x) - crowd * 0.05;
@@ -1066,11 +1078,14 @@ export class World {
       }
       kind = best;
     }
-    this.inject(x, 0.35);
+    this.inject(x, 0.35 + Math.min(task.steps?.length || 0, 10) * 0.03);
     let creature = null;
     if (kind) {
       const r = mulberry32(hashStr(task.title.toLowerCase().trim() + kind));
       const genome = CREATURES[kind].randomGenome(r);
+      // a finished project of many steps blooms into a grander creature
+      const steps = task.steps?.length || 0;
+      if (steps >= 3) genome.size = Math.min(1.3, genome.size * (1 + Math.min(steps, 10) * 0.025));
       const n = this.nStruct(kind, genome);
       this.stats.nIn += n;
       const o = { genome, n, origin: `Bloomed from “${task.title}”`, name: makeName(r), energy: 0.85, age: CREATURES[kind].mature * 0.25 };

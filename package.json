@@ -7,7 +7,7 @@
     "serve": "python3 -m http.server 8080 --directory www",
     "sync": "cap sync android",
     "apk": "cap sync android && cd android && ./gradlew assembleRelease",
-    "test": "node tools/sim.mjs"
+    "test": "node tools/tasks.test.mjs && node tools/sim.mjs"
   },
   "dependencies": {
     "@capacitor-community/keep-awake": "^8.0.1",

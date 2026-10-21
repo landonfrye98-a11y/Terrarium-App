@@ -4,7 +4,8 @@ import { SPECIES, FAUNA_KINDS, PREDATORS, TRAITS, temperament } from './species.
 import { CREATURES } from './fauna.js';
 import { Plant } from './flora.js';
 import { Ambient, escapeHtml, fmtAge, fmtDuration, mulberry32, hashStr, clamp } from './util.js';
-import { dayKey } from './tasks.js';
+import { dayKey, STAGE_NAME } from './tasks.js';
+import { fmtDue, endOfDay } from './when.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -34,7 +35,7 @@ export class UI {
     this.bindJournal();
     this.bindSettings();
     this.bindInspector();
-    this.garden.onChange(() => { this.renderTasks(); this.renderFocus(); });
+    this.garden.onChange(() => { this.renderTasks(); this.renderFocus(); this.renderTaskCard(); });
     this.renderTasks();
     this.renderFocus();
     this.wake();
@@ -76,13 +77,14 @@ export class UI {
       grab.addEventListener('pointerup', up);
       grab.addEventListener('pointercancel', up);
     });
-    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { this.close(); this.hideInspector(); } });
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { this.close(); this.hideInspector(); this.hideTaskCard(); } });
   }
 
   open(name) {
     if (this.openSheet === name) return this.close();
     if (this.openSheet) this.close(true);
     this.hideInspector();
+    this.hideTaskCard();
     const el = $(`#sheet-${name}`);
     el.hidden = false;
     el.classList.remove('closing');
@@ -109,85 +111,277 @@ export class UI {
 
   // ------------------------------------------------------------ tasks
   bindTasks() {
-    $('#task-form').addEventListener('submit', (e) => {
-      e.preventDefault();
-      const inp = $('#task-input');
-      const t = this.garden.add(inp.value);
-      if (t) { inp.value = ''; this.app.audio.plant(); this.app.haptic(8); }
-    });
-    const onAct = (e) => {
-      const b = e.target.closest('button[data-act]');
-      if (!b) return;
-      const id = b.closest('li').dataset.id;
-      const act = b.dataset.act;
-      if (act === 'start') { this.garden.start(id); this.app.haptic(6); }
-      else if (act === 'pause') this.garden.pause(id);
-      else if (act === 'tplus' || act === 'tminus') { this.garden.stepTarget(id, act === 'tplus' ? 1 : -1); this.app.haptic?.(4); }
-      else if (act === 'done') { this.app.completeTask(id); }
-      else if (act === 'del') {
-        if (b.classList.contains('armed')) this.garden.remove(id);
-        else { b.classList.add('armed'); b.setAttribute('aria-label', 'Tap again to compost'); setTimeout(() => b.classList.remove('armed'), 2500); }
-      }
+    const input = $('#task-input');
+    const submit = () => {
+      const t = this.garden.add(input.value);
+      if (!t) return;
+      input.value = '';
+      this.fitInput();
+      this.app.audio.plant(); this.app.haptic(8);
+      const bits = [];
+      if (t.due != null) bits.push(`due ${fmtDue(t.due, t.allDay)}`);
+      if (t.steps.length) bits.push(`${t.steps.length} steps`);
+      if (bits.length) this.toast(`Planted “${t.title}”: ${bits.join(', ')}.`, false, 3000);
     };
-    $('#task-list').addEventListener('click', onAct);
-    // typed targets apply when you leave the box or press enter
-    $('#task-list').addEventListener('change', (e) => {
-      const inp = e.target.closest('input.tmin');
-      if (!inp) return;
-      const v = parseInt(inp.value, 10);
-      if (v > 0) this.garden.setTarget(inp.dataset.tid, v);
-      else this.renderTasks();
-    });
-    $('#task-list').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('input.tmin')) e.target.blur(); });
+    $('#task-form').addEventListener('submit', (e) => { e.preventDefault(); submit(); });
+    // enter plants; shift+enter (or a pasted list) makes steps
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } });
+    input.addEventListener('input', () => this.fitInput());
+    this.openTask = null;
+    const onClick = (e) => {
+      const b = e.target.closest('[data-act]');
+      if (!b) return;
+      const host = b.closest('[data-id]');
+      if (host) this.taskAction(b.dataset.act, host.dataset.id, b, e);
+    };
+    for (const el of [$('#task-list'), $('#task-card')]) {
+      el.addEventListener('click', onClick);
+      el.addEventListener('submit', (e) => {
+        const f = e.target.closest('form.addstep');
+        if (!f) return;
+        e.preventDefault();
+        const id = f.closest('[data-id]').dataset.id;
+        const inp = f.querySelector('input');
+        if (this.garden.addStep(id, inp.value)) {
+          this.app.haptic(4);
+          this.refocus = `[data-id="${id}"] form.addstep input`;
+          this.renderTasks(); this.renderTaskCard();
+          this.refocus = null;
+        }
+      });
+      el.addEventListener('change', (e) => {
+        const host = e.target.closest('[data-id]');
+        if (!host) return;
+        const id = host.dataset.id;
+        if (e.target.matches('input.tmin')) {
+          const v = parseInt(e.target.value, 10);
+          if (v > 0) this.garden.setTarget(id, v); else this.renderTasks();
+        } else if (e.target.matches('input.duedate')) {
+          const v = e.target.value; // yyyy-mm-dd, local
+          if (!v) return;
+          const [y, m, d] = v.split('-').map(Number);
+          const t = this.garden.find(id);
+          const old = t?.due != null && !t.allDay ? new Date(t.due) : null;
+          const at = new Date(y, m - 1, d, old ? old.getHours() : 0, old ? old.getMinutes() : 0).getTime();
+          this.garden.setDue(id, at, !old);
+        } else if (e.target.matches('input.duetime')) {
+          const t = this.garden.find(id);
+          const v = e.target.value; // hh:mm
+          const base = t?.due != null ? new Date(t.due) : new Date();
+          if (!v) { if (t?.due != null) this.garden.setDue(id, base.getTime(), true); return; }
+          const [h, mm] = v.split(':').map(Number);
+          base.setHours(h, mm, 0, 0);
+          this.garden.setDue(id, base.getTime(), false);
+        }
+      });
+      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('input.tmin')) e.target.blur(); });
+    }
     $('#focus-plus').addEventListener('click', () => { const t = this.garden.active; if (t) { this.garden.stepTarget(t.id, 1); this.app.haptic?.(4); } });
     $('#done-list').addEventListener('click', (e) => {
       const li = e.target.closest('li[data-cid]');
       if (li) { const c = this.world.find(li.dataset.cid); if (c) { this.close(); this.app.select(c); } }
     });
+    $('#task-card .close').addEventListener('click', () => this.hideTaskCard());
+  }
+
+  // the add box grows with a pasted list
+  fitInput() {
+    const el = $('#task-input');
+    el.style.height = 'auto';
+    el.style.height = Math.min(160, Math.max(46, el.scrollHeight + 2)) + 'px';
+  }
+
+  // one handler for the list rows and the in-world card
+  taskAction(act, id, b, e) {
+    const g = this.garden;
+    const t = g.find(id);
+    if (!t) return;
+    const dayMs = 86400000;
+    switch (act) {
+      case 'expand': {
+        if (e?.target.closest('button, input, form, a')) return;
+        this.openTask = this.openTask === id ? null : id;
+        this.renderTasks();
+        return;
+      }
+      case 'start': g.start(id); this.app.haptic(6); break;
+      case 'pause': g.pause(id); break;
+      case 'tplus': case 'tminus': g.stepTarget(id, act === 'tplus' ? 1 : -1); this.app.haptic?.(4); break;
+      case 'done': this.app.completeTask(id); return;
+      case 'step': {
+        const r = g.toggleStep(id, b.closest('[data-sid]').dataset.sid);
+        this.app.haptic(r === 'undone' ? 3 : 8);
+        if (r === 'done') this.app.audio.plant();
+        if (r === 'all') this.app.completeTask(id);
+        break;
+      }
+      case 'rmstep': g.removeStep(id, b.closest('[data-sid]').dataset.sid); break;
+      case 'due-today': g.setDue(id, Date.now(), true); break;
+      case 'due-tomorrow': g.setDue(id, Date.now() + dayMs, true); break;
+      case 'due-weekend': { const d = new Date(); g.setDue(id, d.getTime() + ((6 - d.getDay() + 7) % 7 || 7) * dayMs, true); break; }
+      case 'due-week': g.setDue(id, Date.now() + 7 * dayMs, true); break;
+      case 'due-clear': g.setDue(id, null); break;
+      case 'snooze': g.snooze(id); this.app.haptic(6); this.toast(`“${t.title}” is now due ${fmtDue(t.due, t.allDay)}.`, false, 3000); break;
+      case 'more': this.hideTaskCard(); this.openTask = id; this.open('tasks'); requestAnimationFrame(() => $(`#task-list li[data-id="${id}"]`)?.scrollIntoView({ block: 'center' })); return;
+      case 'rename': {
+        const n = prompt('Rename this task', t.title);
+        if (n && n.trim()) g.rename(id, n);
+        return;
+      }
+      case 'del': {
+        if (b.classList.contains('armed')) { g.remove(id); this.hideTaskCard(id); this.app.haptic([10, 40, 10]); }
+        else { b.classList.add('armed'); b.dataset.was = b.textContent; if (b.textContent.trim()) b.textContent = 'Tap again'; setTimeout(() => { b.classList.remove('armed'); if (b.dataset.was) b.textContent = b.dataset.was; }, 2500); }
+        return;
+      }
+      default: return;
+    }
+    this.renderTaskCard();
+  }
+
+  // which part of the list a task belongs in
+  groupOf(t, now, eod) {
+    if (t.state === 'active') return 'now';
+    if (this.garden.stage(t) > 0 || this.garden.overdue(t, now)) return 'late';
+    if (t.due != null && t.due <= eod) return 'today';
+    if (t.due != null) return 'soon';
+    return 'someday';
+  }
+
+  // one-line status under a task's title
+  taskMeta(t, now) {
+    const g = this.garden;
+    const out = [];
+    const st = g.stage(t);
+    if (t.due != null) out.push(`<span class="due ${st || g.overdue(t, now) ? 'late' : t.due <= endOfDay(now) ? 'today' : ''}">${fmtDue(t.due, t.allDay, now)}</span>`);
+    if (st) out.push(`<span class="weed s${st}">${STAGE_NAME[st]}</span>`);
+    else if (g.wilting(t, now)) out.push('<span class="wilt">wilting · untouched for days</span>');
+    if (t.steps.length) out.push(`<span class="nsteps">${g.stepsDone(t)}/${t.steps.length} steps</span>`);
+    if (t.state === 'active' || g.elapsed(t) > 0) out.push(`<span data-el="${t.id}">${this.taskStatus(t)}</span>`);
+    return out.join('');
   }
 
   renderTasks() {
     const g = this.garden;
-    const pending = g.pending.sort((a, b) => (b.state === 'active') - (a.state === 'active') || a.created - b.created);
-    const done = g.doneToday.sort((a, b) => b.completedAt - a.completedAt);
+    const now = Date.now(), eod = endOfDay(now);
+    const pending = g.pending;
+    const late = g.overdueCount;
     const badge = $('#task-badge');
     badge.hidden = !pending.length;
-    badge.textContent = pending.length;
+    badge.textContent = late || pending.length;
+    badge.classList.toggle('late', !!late);
     if (this.openSheet !== 'tasks') return;
-    $('#growing-count').textContent = pending.length ? `· ${pending.length}` : '';
+    const done = g.doneToday.sort((a, b) => b.completedAt - a.completedAt);
     $('#bloomed-count').textContent = done.length ? `· ${done.length}` : '';
     $('#task-hint').hidden = this.world.stats.tasksDone > 2 && pending.length > 0;
     const icon = (p) => `<svg viewBox="0 0 24 24">${p}</svg>`;
     const PLAY = icon('<path d="M8 5.5v13l10-6.5z"/>');
     const PAUSE = icon('<path d="M8 6v12M16 6v12"/>');
     const DONE = icon('<path d="M5 12.5l4.5 4.5L19 7.5"/>');
-    const DEL = icon('<path d="M7 7l10 10M17 7L7 17"/>');
-    $('#task-list').innerHTML = pending.length ? pending.map((t) => {
-      const el = g.elapsed(t);
-      const active = t.state === 'active';
-      const ripe = el >= g.targetMs(t);
-      const cls = [active && 'active', ripe && 'ripe'].filter(Boolean).join(' ');
-      return `<li data-id="${t.id}" class="${cls}">
-        <i class="pod" style="background:${t.c1}"></i>
-        <div class="t"><b>${escapeHtml(t.title)}</b>
-          <div class="meta"><span data-el="${t.id}">${this.taskStatus(t)}</span></div>
-          <div class="stepper"><button data-act="tminus" aria-label="5 minutes less">−</button><input class="tmin" data-tid="${t.id}" type="number" inputmode="numeric" min="1" max="600" step="1" value="${t.targetMin}" aria-label="Focus target in minutes"><span class="unit">min</span><button data-act="tplus" aria-label="5 minutes more">+</button></div>
-          ${active || el > 0 ? `<i class="prog"><i data-pg="${t.id}" style="width:${(g.progress(t) * 100).toFixed(1)}%"></i></i>` : ''}</div>
-        <div class="acts">
-          <button class="icon-btn" data-act="${active ? 'pause' : 'start'}" aria-label="${active ? 'Pause' : 'Start'}">${active ? PAUSE : PLAY}</button>
-          <button class="icon-btn accent" data-act="done" aria-label="Finish">${DONE}</button>
-          <button class="icon-btn del" data-act="del" aria-label="Compost">${DEL}</button>
-        </div></li>`;
-    }).join('') : '<li class="empty">No seeds yet. What are you working on?</li>';
+    const GROUPS = [['now', 'Growing now'], ['late', 'Overdue'], ['today', 'Today'], ['soon', 'Upcoming'], ['someday', 'Someday']];
+    const by = {};
+    for (const t of pending) (by[this.groupOf(t, now, eod)] ||= []).push(t);
+    const order = (a, b) => (a.due ?? Infinity) - (b.due ?? Infinity) || a.created - b.created;
+    let html = '';
+    for (const [k, name] of GROUPS) {
+      const list = by[k];
+      if (!list) continue;
+      list.sort(order);
+      html += `<li class="group g-${k}">${name}<small>${list.length}</small></li>`;
+      html += list.map((t) => {
+        const active = t.state === 'active';
+        const ripe = g.elapsed(t) >= g.targetMs(t);
+        const open = this.openTask === t.id;
+        const st = g.stage(t);
+        const cls = ['task', active && 'active', ripe && 'ripe', open && 'open', st && 'late', st && `s${st}`].filter(Boolean).join(' ');
+        return `<li data-id="${t.id}" class="${cls}">
+          <div class="row" data-act="expand">
+            <i class="pod" style="background:${t.c1}"></i>
+            <div class="t"><b>${escapeHtml(t.title)}</b><div class="meta">${this.taskMeta(t, now)}</div>
+              ${active || g.elapsed(t) > 0 ? `<i class="prog"><i data-pg="${t.id}" style="width:${(g.progress(t) * 100).toFixed(1)}%"></i></i>` : ''}</div>
+            <div class="acts">
+              <button class="icon-btn" data-act="${active ? 'pause' : 'start'}" aria-label="${active ? 'Pause' : 'Start'}">${active ? PAUSE : PLAY}</button>
+              <button class="icon-btn accent" data-act="done" aria-label="${t.steps.some((x) => !x.done) ? 'Finish every step' : 'Finish'}">${DONE}</button>
+            </div>
+          </div>
+          ${open ? this.taskDetail(t) : ''}</li>`;
+      }).join('');
+    }
+    $('#task-list').innerHTML = html || '<li class="empty">No seeds yet. What are you working on?</li>';
     $('#done-list').innerHTML = done.length ? done.map((t) => {
       const c = t.creature;
       const alive = c && this.world.find(c.id);
       return `<li ${alive ? `data-cid="${c.id}"` : ''}>
         <i class="pod" style="background:${t.c1};border-radius:50%"></i>
-        <div class="t"><b>${escapeHtml(t.title)}</b><span>${c ? `became ${escapeHtml(c.name)} the ${SPECIES[c.kind].name}${alive ? ' ›' : ''}` : 'fed the soil'}${t.focusMs > 60000 ? ' · ' + fmtDuration(t.focusMs) + ' tended' : ''}</span></div></li>`;
+        <div class="t"><b>${escapeHtml(t.title)}</b><span>${c ? `became ${escapeHtml(c.name)} the ${SPECIES[c.kind].name}${alive ? ' ›' : ''}` : 'fed the soil'}${t.steps.length ? ` · ${t.steps.length} steps` : ''}${t.focusMs > 60000 ? ' · ' + fmtDuration(t.focusMs) + ' tended' : ''}</span></div></li>`;
     }).join('') : '<li class="empty">Nothing yet today.</li>';
     const s = this.world.stats;
     $('#task-stats').textContent = s.tasksDone ? `${s.tasksDone} task${s.tasksDone === 1 ? '' : 's'} bloomed since this glass was sealed.${this.nextUnlockText()}` : this.nextUnlockText().trim();
+    if (this.refocus) $(`#task-list ${this.refocus}`)?.focus();
+  }
+
+  // steps, due date, focus target and the rest: shared by the list and the card
+  taskDetail(t, inCard) {
+    const g = this.garden;
+    const st = g.stage(t);
+    const steps = t.steps.map((x) => `<li data-sid="${x.id}" class="${x.done ? 'on' : ''}"><button class="chk" data-act="step" aria-label="${x.done ? 'Mark not done' : 'Mark done'}"><svg viewBox="0 0 24 24"><path d="M6 12.5l4 4L18 8"/></svg></button><span>${escapeHtml(x.title)}</span><button class="x" data-act="rmstep" aria-label="Remove step">×</button></li>`).join('');
+    const d = t.due != null ? new Date(t.due) : null;
+    const pad = (n) => String(n).padStart(2, '0');
+    const dateV = d ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` : '';
+    const timeV = d && !t.allDay ? `${pad(d.getHours())}:${pad(d.getMinutes())}` : '';
+    return `<div class="detail">
+      ${steps ? `<ul class="steps">${steps}</ul>` : ''}
+      <form class="addstep"><input type="text" maxlength="120" placeholder="${t.steps.length ? 'Add another step…' : 'Break it into steps…'}" enterkeyhint="done" aria-label="New step"><button class="btn" type="submit">Add</button></form>
+      <div class="due-row">
+        <span class="lbl">Due</span>
+        <button class="chip" data-act="due-today">Today</button><button class="chip" data-act="due-tomorrow">Tomorrow</button><button class="chip" data-act="due-weekend">Weekend</button>
+        <input class="duedate" type="date" value="${dateV}" aria-label="Due date"><input class="duetime" type="time" value="${timeV}" aria-label="Due time">
+        ${t.due != null ? '<button class="chip" data-act="due-clear">No date</button>' : ''}
+      </div>
+      ${inCard ? '' : `<div class="stepper"><button data-act="tminus" aria-label="5 minutes less">−</button><input class="tmin" type="number" inputmode="numeric" min="1" max="600" step="1" value="${t.targetMin}" aria-label="Focus target in minutes"><span class="unit">min focus</span><button data-act="tplus" aria-label="5 minutes more">+</button></div>`}
+      <div class="row-acts">
+        ${t.due != null ? '<button class="btn" data-act="snooze">Snooze a day</button>' : ''}
+        <button class="btn" data-act="rename">Rename</button>
+        <button class="btn danger" data-act="del">${st ? 'Pull the weed' : 'Compost'}</button>
+      </div>
+    </div>`;
+  }
+
+  // ------------------------------------------------------------ in-world task card
+  showTaskCard(t) {
+    this.hideInspector();
+    this.cardTask = t.id;
+    $('#task-card').hidden = false;
+    this.renderTaskCard();
+  }
+  hideTaskCard(id) {
+    if (id && this.cardTask !== id) return;
+    this.cardTask = null;
+    $('#task-card').hidden = true;
+  }
+  renderTaskCard() {
+    const id = this.cardTask;
+    if (!id) return;
+    const g = this.garden;
+    const t = g.find(id);
+    if (!t || t.state === 'done') return this.hideTaskCard();
+    const now = Date.now();
+    const active = t.state === 'active';
+    const st = g.stage(t);
+    const open = t.steps.filter((x) => !x.done).length;
+    const el = $('#task-card');
+    el.dataset.id = id;
+    el.className = `chrome card${st ? ' late s' + st : ''}`;
+    $('#tc-body').innerHTML = `
+      <div class="tc-head"><i class="pod" style="background:${t.c1}"></i><h4 data-act="rename">${escapeHtml(t.title)}</h4></div>
+      <div class="meta">${this.taskMeta(t, now) || '<span>a seed in the soil · no due date</span>'}</div>
+      ${st ? `<p class="weed-note">${['', 'Thorny shoots are pushing out of its pod. Finish it, snooze it, or pull the weed.', 'Its weeds are souring the soil: plants nearby are dying and nothing sprouts.', 'Feral brambles are choking the plants and scratching passing creatures.', 'Its blight spores are giving creatures the gloomcap fungus.'][st]}</p>` : ''}
+      ${this.taskDetail(t, true)}
+      <div class="tc-acts">
+        <button class="btn" data-act="${active ? 'pause' : 'start'}">${active ? 'Pause' : 'Start focus'}</button>
+        <button class="btn accent" data-act="done">${open && t.steps.length ? 'Finish all' : 'Done'}</button>
+        <button class="btn ghost" data-act="more" aria-label="Open in the task list">List ›</button>
+      </div>`;
+    if (this.refocus) $(`#task-card ${this.refocus.replace(/^\[data-id="[^"]+"\]\s*/, '')}`)?.focus();
   }
 
   nextUnlockText() {
@@ -554,6 +748,7 @@ export class UI {
   }
 
   showInspector(obj) {
+    this.hideTaskCard();
     const el = $('#inspector');
     el.hidden = false;
     this.inspecting = obj;

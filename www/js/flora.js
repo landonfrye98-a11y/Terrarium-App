@@ -80,6 +80,9 @@ export class Plant {
         this.growth = want; // these feed on prey or the bodies they rise from
       }
     }
+    // soured soil around a neglected task's weeds: plants start to die
+    const bl = world.blight?.[world.bucketOf(this.x)] || 0;
+    if (bl > 0.3 && this.kind !== 'gloomcap' && this.age <= this.life && chance(bl / (8 * 3600), dt)) this.life = this.age;
     if (this.age > this.life) {
       this.wither = Math.min(1, this.wither + dt / 2400);
       if (this.wither >= 1) { this.dead = true; world.onPlantDeath(this); }

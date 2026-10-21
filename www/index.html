@@ -56,11 +56,10 @@
     <div class="grab"></div>
     <header><h2>Seeds &amp; blooms</h2><button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
     <form id="task-form" autocomplete="off">
-      <input id="task-input" type="text" maxlength="120" placeholder="Plant a task…" enterkeyhint="done" aria-label="New task">
+      <textarea id="task-input" rows="1" maxlength="2000" placeholder="Plant a task… “mow lawn sat”" enterkeyhint="done" aria-label="New task"></textarea>
       <button type="submit" class="btn accent">Plant</button>
     </form>
-    <p class="hint" id="task-hint">Each task becomes a seed in the soil. Press ▶ while you work on it and a sprout grows; finish it and it blooms into a creature.</p>
-    <h3>Growing <small id="growing-count"></small></h3>
+    <p class="hint" id="task-hint">Each task becomes a seed in the soil. Press ▶ while you work on it and a sprout grows; finish it and it blooms into a creature.<br>End a task with a day or time (“tomorrow 3pm”, “sat”, “oct 24”) to give it a due date. Add steps after a colon (“Clean house sun: trash, dishes, vacuum”), or paste a list. Tap a task to see its steps. <b>Leave a task overdue and it grows weeds, and the longer you leave it, the more the glass suffers.</b></p>
     <ul class="task-list" id="task-list"></ul>
     <h3>Bloomed today <small id="bloomed-count"></small></h3>
     <ul class="task-list done" id="done-list"></ul>
@@ -145,6 +144,12 @@
         <button class="btn insp-btn" id="insp-family" hidden>Family tree</button>
       </div>
     </div>
+  </aside>
+
+  <!-- a task, opened from its pod in the glass -->
+  <aside id="task-card" class="chrome card" hidden>
+    <button class="icon-btn close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    <div id="tc-body"></div>
   </aside>
 
   <button id="zoom-reset" class="icon-btn zoom-btn" aria-label="Reset zoom" hidden><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L20 20M7.5 10.5h6"/></svg><span>Reset view</span></button>
