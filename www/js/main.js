@@ -759,6 +759,7 @@ class App {
   }
 
   save() {
+    if (this.leaving) return;
     this.lastSave = this.world.t;
     store.set(SAVE_KEY, { v: 1, savedAt: Date.now(), world: this.world.serialize(), garden: this.garden.serialize() });
   }
@@ -826,14 +827,19 @@ class App {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
+  // both replace the save and reload; the autosave that fires as the page
+  // unloads must not write the old glass back over it
   importData(d) {
     if (!d || !d.world || !Array.isArray(d.world.fauna)) throw new Error('bad file');
+    this.leaving = true;
+    this.stop();
     store.set(SAVE_KEY, d);
     location.reload();
   }
   resetWorld() {
-    store.del(SAVE_KEY);
+    this.leaving = true;
     this.stop();
+    store.del(SAVE_KEY);
     location.reload();
   }
 
