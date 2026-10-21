@@ -541,7 +541,7 @@ export class World {
     pred.digest = h.digest;
     pred.energy = Math.min(1, pred.energy + (prey.species ? 0.4 : 0.7));
     this.act.kills++;
-    if (prey.species) { this.eatEgg(prey, pred); this.log(`${pred.name} ate a ${SPECIES[prey.species].name.toLowerCase()} egg.`, 'hunt'); return; }
+    if (prey.species) { this.killFx(pred, prey); this.eatEgg(prey, pred); this.log(`${pred.name} ate a ${SPECIES[prey.species].name.toLowerCase()} egg.`, 'hunt'); return; }
     this.feed(pred, prey.n || 0, prey.x);
     prey.n = 0;
     this.killFx(pred, prey);

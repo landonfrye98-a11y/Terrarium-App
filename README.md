@@ -71,7 +71,14 @@ Plants follow the same rules. Fanferns, bulbstalks, lantern lilies and puffcaps 
 npm run serve          # http://localhost:8080 — no build step, plain ES modules in www/
 ```
 
-**Focus timer:** each task has a target (15–90 minutes). Its sprout reaches full bloom exactly at the target, and the app chimes and vibrates when you get there.
+**Focus timer:**
+- Each task has a target. Use − and + to step in 5 minutes, or type any number of minutes.
+- The sprout reaches full bloom exactly at the target, and the app chimes and vibrates.
+- While you work, a cloud drifts across the sky with the task and minutes left written faintly on it.
+- A small comet streaks by every 5 minutes, and a big amber one when you reach the target.
+- **+5** on the focus bar stretches the session.
+
+**Commanding predators:** select a hookjaw, lancewing, mire-eel, snaplure or dewveil and press **Send to hunt**. You can only do this once every 20 minutes. Predators still won't take the last few of a species, so you can't empty the glass. Every kill plays a short animation: a strike flash, claw marks, the prey pulled into the predator's mouth, and fragments falling.
 
 **Music (optional):** a cozy lo-fi score made for working to.
 - Warm 7th chords in a major key: brighter in the morning, mellower at night.
